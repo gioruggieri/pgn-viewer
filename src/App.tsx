@@ -1027,10 +1027,11 @@ export default function App() {
     requestAnimationFrame(() => ensureActiveVisible("smooth"));
   };
 
-  function MoveLabel({ node }: { node: PlyNode }) {
+  function MoveLabel({ node, variant = false }: { node: PlyNode; variant?: boolean }) {
     const isActive =
       activeNodeId === node.id || (step > 0 && fenHistory[step] === node.fenAfter);
     const label = node.isWhite ? `${node.moveNumber}.` : `${node.moveNumber}...`;
+    const moveStyle = variant ? styles.variantMove : styles.tokenMove; // << non bold per varianti
 
     return (
       <>
@@ -1040,7 +1041,7 @@ export default function App() {
           data-active={isActive ? "true" : undefined}
           onClick={() => goToNode(node)}
           title={`Vai alla mossa ${label} ${node.san}`}
-          style={{ ...styles.token, ...styles.tokenMove, ...(isActive ? styles.tokenActive : {}) }}
+          style={{ ...styles.token, ...moveStyle, ...(isActive ? styles.tokenActive : {}) }}
         >
           {node.san}
         </span>
@@ -1049,40 +1050,65 @@ export default function App() {
     );
   }
 
-  function VariationInline({ line, level = 1 }: { line: Line; level?: number }) {
+  function VariationInline({
+    line,
+    level = 1,
+    isVariant = true, // << default: siamo in variante
+  }: {
+    line: Line;
+    level?: number;
+    isVariant?: boolean;
+  }) {
     return (
       <span style={variationIndent(level)}>
         (
-        <RenderLine line={line} level={level} />
+        <RenderLine line={line} level={level} isVariant={isVariant} />
         )
       </span>
     );
   }
 
-  function RenderLine({ line, level = 1 }: { line: Line; level?: number }) {
+  function RenderLine({
+    line,
+    level = 1,
+    isVariant = false,
+  }: {
+    line: Line;
+    level?: number;
+    isVariant?: boolean;
+  }) {
     const elements: React.ReactNode[] = [];
 
+    // pre-varianti
     (line.preVariations || []).forEach((v, i) => {
       elements.push(
         <VariationInline
           key={`pre-${(line.startFen || "").slice(0, 16)}-${i}-${level}`}
           line={v}
           level={level + 1}
+          isVariant={true} // << siamo dentro una variante
         />
       );
     });
 
+    // mosse + sotto-varianti
     line.nodes.forEach((node) => {
-      elements.push(<MoveLabel key={`mv-${node.id}`} node={node} />);
+      elements.push(<MoveLabel key={`mv-${node.id}`} node={node} variant={isVariant} />); // << qui
       (node.variations || []).forEach((v, j) => {
         elements.push(
-          <VariationInline key={`var-${node.id}-${j}-${level}`} line={v} level={level + 1} />
+          <VariationInline
+            key={`var-${node.id}-${j}-${level}`}
+            line={v}
+            level={level + 1}
+            isVariant={true} // << anche le sotto-varianti
+          />
         );
       });
     });
 
     return <>{elements}</>;
   }
+
 
   function RenderMain({ line }: { line: Line }) {
     const rows: React.ReactNode[] = [];
