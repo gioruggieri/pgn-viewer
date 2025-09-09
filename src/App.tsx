@@ -21,6 +21,37 @@ function parseHeaders(pgn: string) {
   return headers;
 }
 
+/** Compatibilità con marcatori esterni + pulizia detriti engine */
+function preprocessExternalMarkers(pgnText: string) {
+  let t = pgnText.replace(/\r\n?/g, "\n");
+
+  // @@StartBracket@@ foo @@EndBracket@@  -> { foo }
+  t = t.replace(/@@StartBracket@@([\s\S]*?)@@EndBracket@@/g, (_, inside) => {
+    const s = String(inside || "").trim();
+    return s ? `{ ${s} }` : "";
+  });
+
+  // @@StartFEN@@ ... @@EndFEN@@ -> {FEN: ...}
+  t = t.replace(/@@StartFEN@@([\s\S]*?)@@EndFEN@@/g, (_, fen) => {
+    const s = String(fen || "").trim();
+    return s ? `{FEN: ${s}}` : "";
+  });
+
+  // residui isolati
+  t = t.replace(/@@(?:Start|End)[A-Za-z]+@@/g, "");
+
+  // ChessBase/engine debris: [%evp ...], [%clk ...], ecc.
+  t = t.replace(/\[\%[^\]]*\]/g, "");
+
+  // Marcatori (RR)
+  t = t.replace(/\(RR\)/g, "");
+
+  // Parentesi vuote
+  t = t.replace(/\(\s*\)/g, "");
+
+  return t;
+}
+
 /** Split a .pgn file into individual games. */
 function splitGames(pgnText: string) {
   const normalized = pgnText.replace(/\r\n?/g, "\n");
@@ -57,6 +88,7 @@ function sanitizeSANForMove(san: string) {
     .replace(/[!?]+/g, "");
 }
 
+// Token types for movetext
 const TT = {
   COMMENT: "COMMENT",
   NAG: "NAG",
@@ -70,14 +102,15 @@ const TT = {
 /** Tokenizer compliant with PGN movetext. */
 function tokenizeMovetext(raw: string) {
   const s = stripSemicolonComments(raw);
-  const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
+  // supporta sia "...", sia ellissi U+2026
+  const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.|…)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
   const tokens: Array<{ t: string; v: string }> = [];
   let m;
   while ((m = rx.exec(s))) {
     const tok = m[0];
     if (tok[0] === "{") tokens.push({ t: TT.COMMENT, v: tok.slice(1, -1).trim() });
     else if (tok[0] === "$") tokens.push({ t: TT.NAG, v: tok });
-    else if (/^\d+\.(?:\.\.)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
+    else if (/^\d+\.(?:\.\.|…)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
     else if (tok === "(") tokens.push({ t: TT.RAV_START, v: tok });
     else if (tok === ")") tokens.push({ t: TT.RAV_END, v: tok });
     else if (/^(1-0|0-1|1\/2-1\/2|\*)$/.test(tok)) tokens.push({ t: TT.RESULT, v: tok });
@@ -90,6 +123,11 @@ function tokenizeMovetext(raw: string) {
 let NODE_ID_SEQ = 1;
 function nextId() {
   return NODE_ID_SEQ++;
+}
+
+let LINE_ID_SEQ = 1;
+function nextLineId() {
+  return LINE_ID_SEQ++;
 }
 
 type PlyNode = {
@@ -110,13 +148,24 @@ type PlyNode = {
 };
 
 type Line = {
+  lid: number;
   startFen: string;
   nodes: PlyNode[];
   preVariations?: Line[];
 };
 
+function sideFromFen(fen: string): "w" | "b" {
+  try {
+    return fen.split(" ")[1] === "b" ? "b" : "w";
+  } catch {
+    return "w";
+  }
+}
+
 function parseMovetextToTree(moveText: string, startFen?: string): { main: Line; mainlineFlat: PlyNode[] } {
   NODE_ID_SEQ = 1;
+  LINE_ID_SEQ = 1;
+
   const tokens = tokenizeMovetext(moveText);
 
   function mkChess(fen?: string) {
@@ -129,7 +178,7 @@ function parseMovetextToTree(moveText: string, startFen?: string): { main: Line;
 
   function parseLine(idx: number, startFenLocal: string): { line: Line; idx: number } {
     const chess = mkChess(startFenLocal);
-    const line: Line = { startFen: startFenLocal, nodes: [], preVariations: [] };
+    const line: Line = { lid: nextLineId(), startFen: startFenLocal, nodes: [], preVariations: [] };
 
     let pendingBefore: string[] = [];
     let lastWasMove = false;
@@ -142,7 +191,25 @@ function parseMovetextToTree(moveText: string, startFen?: string): { main: Line;
       }
 
       if (tok.t === TT.RAV_START) {
-        const anchorFen = line.nodes.length ? line.nodes[line.nodes.length - 1].fenAfter : line.startFen;
+        const lastNode = line.nodes.length ? line.nodes[line.nodes.length - 1] : null;
+        // default: ancora DOPO l'ultima mossa giocata
+        let anchorFen = lastNode ? lastNode.fenAfter : line.startFen;
+
+        // guarda il primo token significativo nella RAV
+        let j = idx + 1;
+        while (j < tokens.length && (tokens[j].t === TT.COMMENT || tokens[j].t === TT.NAG)) j++;
+
+        // se la variante inizia con un numero di mossa, allinea il turno
+        if (j < tokens.length && tokens[j].t === TT.MOVE_NUM && lastNode) {
+          const wantsBlack = /…|\.\.\.$/.test(tokens[j].v);
+          const desired: "w" | "b" = wantsBlack ? "b" : "w";
+          const current = sideFromFen(anchorFen);
+          if (current !== desired) {
+            // variante alternativa alla mossa appena giocata: torna PRIMA
+            anchorFen = lastNode.fenBefore;
+          }
+        }
+
         idx++;
         const { line: varLine, idx: nextIdx } = parseLine(idx, anchorFen);
         idx = nextIdx;
@@ -243,39 +310,6 @@ function parseMovetextToTree(moveText: string, startFen?: string): { main: Line;
 }
 
 /* =====================================================
-   FEN -> position object for react-chessboard
-   ===================================================== */
-const PIECE_LETTERS: Record<string, "K" | "Q" | "R" | "B" | "N" | "P"> = {
-  k: "K",
-  q: "Q",
-  r: "R",
-  b: "B",
-  n: "N",
-  p: "P",
-};
-function fenToObject(fen?: string) {
-  const obj: Record<string, any> = {};
-  if (!fen) return obj;
-  const [placement] = String(fen).split(" ");
-  const rows = placement.split("/");
-  const files = "abcdefgh";
-  for (let r = 0; r < 8; r++) {
-    let file = 0;
-    for (const ch of rows[r]) {
-      if (/\d/.test(ch)) file += parseInt(ch, 10);
-      else {
-        const color = ch === ch.toUpperCase() ? "w" : "b";
-        const piece = PIECE_LETTERS[ch.toLowerCase()];
-        const square = `${files[file]}${8 - r}`;
-        obj[square] = (color + piece) as any;
-        file++;
-      }
-    }
-  }
-  return obj;
-}
-
-/* =====================================================
    UI styles
    ===================================================== */
 const styles = {
@@ -340,19 +374,51 @@ const styles = {
     cursor: "not-allowed" as const,
   },
 
-  layout: { display: "flex", alignItems: "flex-start", gap: 16 },
-  left: { width: 420 },
-  right: {
-    flex: 1,
-    height: "70vh",
-    overflowY: "auto" as const,
+  // === Resizable cards (sopra)
+  sectionGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 16,
+    marginBottom: 16,
+  },
+  card: {
     background: "white",
     borderWidth: 1,
     borderStyle: "solid" as const,
     borderColor: "#e5e7eb",
     borderRadius: 16,
     padding: 12,
+    overflow: "auto",
+    resize: "vertical" as const,
+    minHeight: 120,
   },
+
+  // === Main layout con splitter orizzontale
+  layout: { display: "flex", alignItems: "stretch", gap: 8, minHeight: "50vh" },
+  left: { display: "flex", flexDirection: "column", gap: 8 },
+  splitter: {
+    width: 6,
+    cursor: "col-resize",
+    alignSelf: "stretch",
+    background: "#e5e7eb",
+    borderRadius: 6,
+  },
+  splitterActive: { background: "#c7d2fe" },
+
+  right: {
+    flex: 1,
+    height: "70vh",
+    overflow: "auto" as const,
+    resize: "vertical" as const,
+    background: "white",
+    borderWidth: 1,
+    borderStyle: "solid" as const,
+    borderColor: "#e5e7eb",
+    borderRadius: 16,
+    padding: 12,
+    minHeight: 220,
+  },
+
   select: {
     width: "100%",
     padding: 8,
@@ -374,22 +440,11 @@ const styles = {
     background: "white",
     color: "#000",
     caretColor: "#000",
+    resize: "vertical" as const,
   },
-  sectionGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 16,
-    marginBottom: 16,
-  },
-  card: {
-    background: "white",
-    borderWidth: 1,
-    borderStyle: "solid" as const,
-    borderColor: "#e5e7eb",
-    borderRadius: 16,
-    padding: 12,
-  },
+
   moveNumber: { color: "#6b7280", paddingRight: 6 },
+
   flow: {
     fontSize: 14,
     lineHeight: 1.55,
@@ -398,12 +453,14 @@ const styles = {
     wordWrap: "break-word" as const,
   },
   token: { marginRight: 6 },
-  tokenMove: { fontWeight: 700, cursor: "pointer" },
+  tokenMove: { fontWeight: 700, cursor: "pointer" }, // mainline bold ok
   tokenActive: {
     background: "#FEF08A",
     border: "1px solid #F59E0B",
     borderRadius: 4,
     padding: "0 2px",
+    scrollMarginTop: 60,
+    scrollMarginBottom: 60,
   },
   tokenComment: { fontStyle: "italic", color: "#15803d" },
   tokenParen: {
@@ -413,15 +470,82 @@ const styles = {
     marginRight: 6,
     display: "inline-block",
   },
+
   feedbackBad: { color: "#b91c1c", fontWeight: 700 },
   feedbackGood: { color: "#15803d", fontWeight: 700 },
 
-  // Arena-like rows
-  row: { display: "grid", gridTemplateColumns: "46px 1fr", alignItems: "baseline", marginBottom: 4 },
-  noCol: { textAlign: "left", width: 46, color: "#6b7280" },
-  // numeri mainline in rosso
-  noColMain: { textAlign: "left", width: 46, color: "#dc2626", fontWeight: 800 },
+  // Arena-like rows: colonna numeri più larga e fissa
+  row: {
+    display: "grid",
+    gridTemplateColumns: "60px 1fr",
+    alignItems: "baseline",
+    marginBottom: 4,
+  },
+  noCol: {
+    textAlign: "left",
+    width: 60,
+    color: "#6b7280",
+    whiteSpace: "nowrap" as const,
+    fontVariantNumeric: "tabular-nums",
+  },
+  noColMain: {
+    textAlign: "left",
+    width: 60,
+    color: "#dc2626",
+    fontWeight: 800,
+    whiteSpace: "nowrap" as const,
+    fontVariantNumeric: "tabular-nums",
+  },
   contentCol: { paddingLeft: 4 },
+
+  // Badge FEN
+  fenBadge: {
+    display: "inline-block",
+    padding: "0 6px",
+    borderRadius: 8,
+    border: "1px solid #c7d2fe",
+    background: "#eef2ff",
+    fontSize: 12,
+    cursor: "pointer",
+    marginRight: 6,
+  },
+
+  // Vista varianti "ad albero"
+  variantBlock: {
+    marginTop: 6,
+    border: "1px solid #e5e7eb",
+    borderRadius: 10,
+    background: "#fafafa",
+  },
+  variantHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 8px",
+    fontSize: 12,
+    color: "#374151",
+    cursor: "pointer",
+    userSelect: "none" as const,
+    borderBottom: "1px solid #e5e7eb",
+  },
+  variantCount: { fontWeight: 700, color: "#111827" },
+  variantList: { padding: "6px 8px" },
+  variantRow: { display: "block", padding: "2px 0", fontSize: 13 },
+  variantBullet: { display: "inline-block", width: 14, color: "#6b7280" },
+  // << non bold per le varianti >>
+  variantMove: { marginRight: 6, cursor: "pointer", fontWeight: 400 as const },
+  variantMoveDim: { color: "#6b7280", fontWeight: 400 as const },
+
+  // intestazione rami
+  variantLineHeader: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
+    cursor: "pointer",
+    userSelect: "none" as const,
+    padding: "2px 0",
+  },
+  variantPreview: { fontSize: 13, fontWeight: 400 as const },
 } as const;
 
 const variationIndent = (level: number) => ({ marginLeft: level * 16 });
@@ -441,46 +565,86 @@ export default function App() {
   const [fenHistory, setFenHistory] = useState<string[]>([new Chess().fen()]);
   const [step, setStep] = useState(0);
   const liveFen = fenHistory[step] || new Chess().fen();
-  const boardPosition = useMemo(() => fenToObject(liveFen), [liveFen]);
 
+  // === dimensioni/resize ===
+  const [leftWidth, setLeftWidth] = useState(440); // larghezza pannello scacchiera
+  const [dragging, setDragging] = useState(false);
+  const startXRef = useRef(0);
+  const startWRef = useRef(440);
+  const minLeft = 320;
+  const maxLeft = 820;
+
+  const onSplitDown = (e: React.MouseEvent) => {
+    setDragging(true);
+    startXRef.current = e.clientX;
+    startWRef.current = leftWidth;
+    window.addEventListener("mousemove", onSplitMove);
+    window.addEventListener("mouseup", onSplitUp);
+    e.preventDefault();
+  };
+  const onSplitMove = (e: MouseEvent) => {
+    if (!dragging) return;
+    const dx = e.clientX - startXRef.current;
+    const next = Math.min(maxLeft, Math.max(minLeft, startWRef.current + dx));
+    setLeftWidth(next);
+  };
+  const onSplitUp = () => {
+    setDragging(false);
+    window.removeEventListener("mousemove", onSplitMove);
+    window.removeEventListener("mouseup", onSplitUp);
+  };
+  useEffect(() => {
+    return () => {
+      window.removeEventListener("mousemove", onSplitMove);
+      window.removeEventListener("mouseup", onSplitUp);
+    };
+  }, []);
+
+  // Board size (slider) + clamp alla colonna sinistra
   const [boardSize, setBoardSize] = useState(400);
+  const boardRenderWidth = Math.min(boardSize, Math.floor(leftWidth));
+
+  // training & feedback
   const [training, setTraining] = useState(true);
   const [feedback, setFeedback] = useState<null | { ok: boolean; text: string }>(null);
   const feedbackTimer = useRef<any>(null);
   useEffect(() => () => { if (feedbackTimer.current) clearTimeout(feedbackTimer.current); }, []);
 
-  const ANIM_MS = 200;
+  // animazione
+  const ANIM_MS = 300;
   const [isAnimating, setIsAnimating] = useState(false);
   const animTimerRef = useRef<any>(null);
   const stepRef = useRef(step);
   useEffect(() => { stepRef.current = step; }, [step]);
 
+  // pannello mosse
   const movesPaneRef = useRef<HTMLDivElement | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<number | null>(null);
 
-  // === helper: assicurati che l'elemento evidenziato sia visibile ===
+  // Tooltip mini-board
+  const [preview, setPreview] = useState<{ fen: string | null; x: number; y: number; visible: boolean }>({
+    fen: null, x: 0, y: 0, visible: false,
+  });
+  const showPreview = (fen: string, e: React.MouseEvent) => setPreview({ fen, x: e.clientX, y: e.clientY, visible: true });
+  const movePreview = (e: React.MouseEvent) => setPreview((p) => (p.visible ? { ...p, x: e.clientX, y: e.clientY } : p));
+  const hidePreview = () => setPreview((p) => ({ ...p, visible: false }));
+
+  // Vista varianti
+  const [variantView, setVariantView] = useState<'tree' | 'inline'>('tree');
+  const [openVars, setOpenVars] = useState<Record<number, boolean>>({});
+  const [openLines, setOpenLines] = useState<Record<number, boolean>>({});
+
+  // keep active token visible (centrato)
   const ensureActiveVisible = (behavior: ScrollBehavior = "smooth") => {
     const pane = movesPaneRef.current;
     if (!pane) return;
     const activeEl = pane.querySelector('[data-active="true"]') as HTMLElement | null;
     if (!activeEl) return;
-
-    const margin = 40;
-    const paneTop = pane.scrollTop;
-    const paneBottom = paneTop + pane.clientHeight;
-    const elTop = activeEl.offsetTop;
-    const elBottom = elTop + activeEl.offsetHeight;
-
-    if (elTop < paneTop + margin) {
-      pane.scrollTo({ top: Math.max(0, elTop - margin), behavior });
-    } else if (elBottom > paneBottom - margin) {
-      pane.scrollTo({ top: elBottom - pane.clientHeight + margin, behavior });
-    }
+    activeEl.scrollIntoView({ block: "center", inline: "nearest", behavior });
   };
-
-  // quando cambia lo step (pulsanti, DnD, tastiera, rotellina) => autoscroll
   useEffect(() => {
-    ensureActiveVisible("auto");
+    const id = requestAnimationFrame(() => ensureActiveVisible("smooth"));
+    return () => cancelAnimationFrame(id);
   }, [step, fenHistory]);
 
   /* ---------------- Loaders ---------------- */
@@ -489,7 +653,8 @@ export default function App() {
     reader.onload = () => {
       const txt = String(reader.result || "");
       setRawPgn(txt);
-      const splitted = splitGames(txt);
+      const pre = preprocessExternalMarkers(txt);
+      const splitted = splitGames(pre);
       setGames(splitted);
       setGameIndex(0);
     };
@@ -501,7 +666,8 @@ export default function App() {
     e.currentTarget.value = "";
   };
   const loadFromTextarea = () => {
-    const splitted = splitGames(rawPgn);
+    const pre = preprocessExternalMarkers(rawPgn);
+    const splitted = splitGames(pre);
     setGames(splitted);
     setGameIndex(0);
   };
@@ -517,6 +683,7 @@ export default function App() {
     const hdrs = parseHeaders(g);
     const moveText = extractMoveText(g);
     const startFen = hdrs.SetUp === "1" && hdrs.FEN ? hdrs.FEN : undefined;
+
     const { main, mainlineFlat } = parseMovetextToTree(moveText, startFen);
 
     setHeaders(hdrs);
@@ -528,6 +695,8 @@ export default function App() {
     setFenHistory(fens);
     setStep(0);
     setActiveNodeId(null);
+    setOpenVars({}); // richiudi varianti all'inizio
+    setOpenLines({}); // reset toggle linee
   }, [games, gameIndex]);
 
   /* ---------------- Navigation helpers ---------------- */
@@ -554,7 +723,10 @@ export default function App() {
         return;
       }
       setStep(frames[idx]);
-      animTimerRef.current = setTimeout(() => play(idx + 1), ANIM_MS + 40);
+      animTimerRef.current = setTimeout(() => {
+        ensureActiveVisible("auto");
+        play(idx + 1);
+      }, ANIM_MS + 40);
     };
     play(0);
   };
@@ -669,7 +841,156 @@ export default function App() {
     return `${white} vs ${black}${event}${result}`;
   };
 
-  /* ---------------- Rendering ---------------- */
+  /* ---------------- Commenti con badge + anteprima FEN ---------------- */
+  function CommentTokens({ texts }: { texts?: string[] }) {
+    if (!texts || !texts.length) return null;
+    return (
+      <>
+        {texts.map((text, i) => {
+          const m = String(text || "").match(/FEN\s*:?\s*([^\}]+)/i);
+          if (m) {
+            const fen = m[1].trim();
+            return (
+              <span
+                key={`fen-${i}`}
+                style={styles.fenBadge}
+                title="Anteprima diagramma — clic per aprire"
+                onClick={() => {
+                  try {
+                    const c = new Chess(fen);
+                    const newFen = c.fen();
+                    setFenHistory([newFen]);
+                    setStep(0);
+                    setActiveNodeId(null);
+                    setTraining(false);
+                  } catch {}
+                }}
+                onMouseEnter={(e) => showPreview(fen, e)}
+                onMouseMove={(e) => movePreview(e)}
+                onMouseLeave={hidePreview}
+              >
+                Diagramma
+              </span>
+            );
+          }
+          return (
+            <span key={`c-${i}`} style={{ ...styles.token, ...styles.tokenComment }}>
+              ({text})
+            </span>
+          );
+        })}
+      </>
+    );
+  }
+
+  /* ---------------- Varianti: blocco “ad albero” (toggle per nodo) ---------------- */
+  function VariantBlock({ node }: { node: PlyNode }) {
+    const vars = node.variations || [];
+    if (!vars.length) return null;
+
+    const open = !!openVars[node.id];
+    const toggle = () => setOpenVars((s) => ({ ...s, [node.id]: !open }));
+
+    const letter = (i: number) => String.fromCharCode("A".charCodeAt(0) + i);
+
+    return (
+      <div style={styles.variantBlock}>
+        <div style={styles.variantHeader} onClick={toggle}>
+          <span>{open ? "▼" : "▶"}</span>
+          <span>Varianti</span>
+          <span style={styles.variantCount}>({vars.length})</span>
+        </div>
+        {open && (
+          <div style={styles.variantList}>
+            {vars.map((line, idx) => (
+              <VariantBranchTree
+                key={`v-${node.id}-${idx}`}
+                line={line}
+                depth={1}
+                label={letter(idx)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ---------------- Renderer ricorsivo collassabile per i rami ---------------- */
+  function linePreview(line: Line, maxPlies = 6) {
+    const parts: string[] = [];
+    for (let i = 0; i < Math.min(maxPlies, line.nodes.length); i++) {
+      const n = line.nodes[i];
+      const num = n.isWhite ? `${n.moveNumber}.` : `${n.moveNumber}...`;
+      parts.push(i === 0 ? `${num} ${n.san}` : n.san);
+    }
+    if (line.nodes.length > maxPlies) parts.push("…");
+    return parts.join(" ");
+  }
+
+  function VariantBranchTree({
+    line,
+    depth = 1,
+    label,
+  }: {
+    line: Line;
+    depth?: number;
+    label: string;
+  }) {
+    const open = openLines[line.lid] ?? (depth <= 1); // di default il primo livello è aperto
+    const toggle = () => setOpenLines((s) => ({ ...s, [line.lid]: !open }));
+    const letter = (i: number) => String.fromCharCode("A".charCodeAt(0) + i);
+
+    return (
+      <div style={variationIndent(depth)}>
+        {/* intestazione del ramo */}
+        <div style={styles.variantLineHeader} onClick={toggle}>
+          <span>{open ? "▼" : "▶"}</span>
+          <span style={styles.variantBullet}>{label}</span>
+          <span style={styles.variantPreview}>{linePreview(line)}</span>
+        </div>
+
+        {/* contenuto del ramo */}
+        {open && (
+          <div style={{ paddingLeft: 16 }}>
+            {/* pre-varianti */}
+            {(line.preVariations || []).map((pre, x) => (
+              <VariantBranchTree key={`pre-${line.lid}-${x}`} line={pre} depth={depth + 1} label={letter(x)} />
+            ))}
+
+            {/* sequenza di mosse della linea */}
+            {line.nodes.map((n) => {
+              const num = n.isWhite ? `${n.moveNumber}.` : `${n.moveNumber}...`;
+              const isActive = activeNodeId === n.id || (step > 0 && fenHistory[step] === n.fenAfter);
+
+              return (
+                <div key={`n-${n.id}`} style={{ padding: "2px 0" }}>
+                  <span style={{ ...styles.variantMove, ...styles.variantMoveDim }}>{num}</span>
+                  <CommentTokens texts={n.commentBefore} />
+                  <span
+                    data-active={isActive ? "true" : undefined}
+                    onClick={() => goToNode(n)}
+                    title={`Vai a ${num} ${n.san}`}
+                    style={{ ...styles.variantMove, ...(isActive ? styles.tokenActive : {}) }}
+                  >
+                    {n.san}
+                  </span>
+                  <CommentTokens texts={n.commentAfter} />
+
+                  {/* sotto-varianti della singola mossa */}
+                  {(n.variations || []).map((sub, k) => (
+                    <VariantBranchTree key={`sub-${n.id}-${k}`} line={sub} depth={depth + 1} label={letter(k)} />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ---------------- Rendering (inline + main) ---------------- */
   const goToNode = (node: PlyNode) => {
     if (training && node.lineRef && treeMain && node.lineRef !== treeMain) setTraining(false);
 
@@ -703,19 +1024,18 @@ export default function App() {
     setStep(path.length);
     setActiveNodeId(node.id);
 
-    requestAnimationFrame(() => ensureActiveVisible());
+    requestAnimationFrame(() => ensureActiveVisible("smooth"));
   };
 
   function MoveLabel({ node }: { node: PlyNode }) {
-    const isActive = activeNodeId === node.id || (step > 0 && fenHistory[step] === node.fenAfter);
+    const isActive =
+      activeNodeId === node.id || (step > 0 && fenHistory[step] === node.fenAfter);
     const label = node.isWhite ? `${node.moveNumber}.` : `${node.moveNumber}...`;
-    const before = (node.commentBefore || []).join(" ");
-    const after = (node.commentAfter || []).join(" ");
 
     return (
       <>
         <span style={{ ...styles.token, ...styles.moveNumber }}>{label}</span>
-        {before ? (<span style={{ ...styles.token, ...styles.tokenComment }}>({before})</span>) : null}
+        <CommentTokens texts={node.commentBefore} />
         <span
           data-active={isActive ? "true" : undefined}
           onClick={() => goToNode(node)}
@@ -724,19 +1044,31 @@ export default function App() {
         >
           {node.san}
         </span>
-        {after ? (<span style={{ ...styles.token, ...styles.tokenComment }}>({after})</span>) : null}
+        <CommentTokens texts={node.commentAfter} />
       </>
     );
   }
 
-  function RenderLine({ line }: { line: Line }) {
+  function VariationInline({ line, level = 1 }: { line: Line; level?: number }) {
+    return (
+      <span style={variationIndent(level)}>
+        (
+        <RenderLine line={line} level={level} />
+        )
+      </span>
+    );
+  }
+
+  function RenderLine({ line, level = 1 }: { line: Line; level?: number }) {
     const elements: React.ReactNode[] = [];
 
     (line.preVariations || []).forEach((v, i) => {
       elements.push(
-        <span key={`prev-${(line.startFen || "").slice(0, 16)}-${i}`} style={styles.tokenParen}>
-          (<RenderLine line={v} />)
-        </span>
+        <VariationInline
+          key={`pre-${(line.startFen || "").slice(0, 16)}-${i}-${level}`}
+          line={v}
+          level={level + 1}
+        />
       );
     });
 
@@ -744,24 +1076,12 @@ export default function App() {
       elements.push(<MoveLabel key={`mv-${node.id}`} node={node} />);
       (node.variations || []).forEach((v, j) => {
         elements.push(
-          <span key={`var-${node.id}-${j}`} style={styles.tokenParen}>
-            (<RenderLine line={v} />)
-          </span>
+          <VariationInline key={`var-${node.id}-${j}-${level}`} line={v} level={level + 1} />
         );
       });
     });
 
     return <>{elements}</>;
-  }
-
-  function VariationInline({ line, level = 1 }: { line: Line; level?: number }) {
-    return (
-      <span style={variationIndent(level)}>
-        (
-        <RenderLine line={line} />
-        )
-      </span>
-    );
   }
 
   function RenderMain({ line }: { line: Line }) {
@@ -779,14 +1099,12 @@ export default function App() {
     line.nodes.forEach((node) => {
       const isActive = (step > 0 && fenHistory[step] === node.fenAfter) || activeNodeId === node.id;
       const label = node.isWhite ? `${node.moveNumber}.` : `${node.moveNumber}...`;
-      const before = (node.commentBefore || []).join(" ");
-      const after = (node.commentAfter || []).join(" ");
 
       rows.push(
         <div key={`row-${node.id}`} style={styles.row}>
           <div style={styles.noColMain}>{label}</div>
           <div style={styles.contentCol}>
-            {before ? (<span style={{ ...styles.token, ...styles.tokenComment }}>({before})</span>) : null}
+            <CommentTokens texts={node.commentBefore} />
             <span
               data-active={isActive ? "true" : undefined}
               onClick={() => goToNode(node)}
@@ -795,10 +1113,15 @@ export default function App() {
             >
               {node.san}
             </span>
-            {after ? (<span style={{ ...styles.token, ...styles.tokenComment }}>({after})</span>) : null}
-            {(node.variations || []).map((v, j) => (
-              <VariationInline key={`var-inline-${node.id}-${j}`} line={v} level={1} />
-            ))}
+            <CommentTokens texts={node.commentAfter} />
+
+            {/* Varianti: albero vs in linea */}
+            {variantView === 'tree'
+              ? (node.variations?.length ? <VariantBlock node={node} /> : null)
+              : (node.variations || []).map((v, j) => (
+                  <VariationInline key={`var-inline-${node.id}-${j}`} line={v} level={1} />
+                ))
+            }
           </div>
         </div>
       );
@@ -810,7 +1133,7 @@ export default function App() {
   const flow = useMemo(() => {
     if (!treeMain) return null;
     return <RenderMain line={treeMain} />;
-  }, [treeMain, activeNodeId, fenHistory, step]);
+  }, [treeMain, activeNodeId, fenHistory, step, variantView, openVars, openLines]);
 
   /* ---------------- Tastiera: frecce SX/DX, Home/Fine ---------------- */
   useEffect(() => {
@@ -842,15 +1165,76 @@ export default function App() {
   const lastWheelRef = useRef(0);
   const onWheelNav = (e: React.WheelEvent) => {
     const now = Date.now();
-    if (now - lastWheelRef.current < 110) return; // piccolo throttling
+    if (now - lastWheelRef.current < 110) return; // throttling lieve
     lastWheelRef.current = now;
 
-    // verso giù => avanti, su => indietro
     if (e.deltaY > 0) animateToStep(stepRef.current + 1);
     else if (e.deltaY < 0) animateToStep(stepRef.current - 1);
   };
 
+  /* ---------------- Helpers per Apri/Chiudi tutto ---------------- */
+  const hasAnyVariants = useMemo(() => {
+    function check(line?: Line | null): boolean {
+      if (!line) return false;
+      if ((line.preVariations && line.preVariations.length) || line.nodes.some(n => n.variations && n.variations.length)) return true;
+      for (const n of line.nodes) {
+        for (const l of (n.variations || [])) if (check(l)) return true;
+      }
+      for (const l of (line.preVariations || [])) if (check(l)) return true;
+      return false;
+    }
+    return check(treeMain);
+  }, [treeMain]);
+
+  const openAll = () => {
+    if (!treeMain) return;
+    function collectLineIds(line: Line, acc: number[] = []) {
+      acc.push(line.lid);
+      (line.preVariations || []).forEach(l => collectLineIds(l, acc));
+      line.nodes.forEach(n => (n.variations || []).forEach(l => collectLineIds(l, acc)));
+      return acc;
+    }
+    function collectNodeIdsWithVars(line: Line, acc: number[] = []) {
+      (line.preVariations || []).forEach(l => collectNodeIdsWithVars(l, acc));
+      line.nodes.forEach(n => {
+        if (n.variations && n.variations.length) acc.push(n.id);
+        (n.variations || []).forEach(l => collectNodeIdsWithVars(l, acc));
+      });
+      return acc;
+    }
+    const lids = collectLineIds(treeMain, []);
+    const nids = collectNodeIdsWithVars(treeMain, []);
+    setOpenLines(Object.fromEntries(lids.map(id => [id, true])));
+    setOpenVars(Object.fromEntries(nids.map(id => [id, true])));
+  };
+
+  const closeAll = () => {
+    if (!treeMain) return;
+    function collectLineIds(line: Line, acc: number[] = []) {
+      acc.push(line.lid);
+      (line.preVariations || []).forEach(l => collectLineIds(l, acc));
+      line.nodes.forEach(n => (n.variations || []).forEach(l => collectLineIds(l, acc)));
+      return acc;
+    }
+    function collectNodeIdsWithVars(line: Line, acc: number[] = []) {
+      (line.preVariations || []).forEach(l => collectNodeIdsWithVars(l, acc));
+      line.nodes.forEach(n => {
+        if (n.variations && n.variations.length) acc.push(n.id);
+        (n.variations || []).forEach(l => collectNodeIdsWithVars(l, acc));
+      });
+      return acc;
+    }
+    const lids = collectLineIds(treeMain, []);
+    const nids = collectNodeIdsWithVars(treeMain, []);
+    setOpenLines(Object.fromEntries(lids.map(id => [id, false])));
+    setOpenVars(Object.fromEntries(nids.map(id => [id, false])));
+  };
+
   /* ---------------- JSX ---------------- */
+  const pvSize = 160;
+  const pvLeft = Math.min(typeof window !== "undefined" ? window.innerWidth - pvSize - 12 : 0, preview.x + 12);
+  const pvTop  = Math.min(typeof window !== "undefined" ? window.innerHeight - pvSize - 12 : 0, preview.y + 12);
+
   return (
     <div style={styles.app}>
       <div style={styles.container}>
@@ -902,10 +1286,42 @@ export default function App() {
             >
               {training ? "Allenamento: ON" : "Allenamento: OFF"}
             </button>
+            <button
+              onClick={() => setVariantView(v => v === 'tree' ? 'inline' : 'tree')}
+              style={styles.btn}
+              title="Cambia modalità di visualizzazione delle varianti"
+            >
+              Varianti: {variantView === 'tree' ? 'albero' : 'in linea'}
+            </button>
+
+            {/* Apri/Chiudi tutto per l'albero */}
+            <button
+              onClick={openAll}
+              style={btnStyle(!(variantView === 'tree' && hasAnyVariants))}
+              disabled={!(variantView === 'tree' && hasAnyVariants)}
+              title="Apri tutte le varianti"
+            >
+              Apri tutto
+            </button>
+            <button
+              onClick={closeAll}
+              style={btnStyle(!(variantView === 'tree' && hasAnyVariants))}
+              disabled={!(variantView === 'tree' && hasAnyVariants)}
+              title="Chiudi tutte le varianti"
+            >
+              Chiudi tutto
+            </button>
+
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 12, color: "#6b7280" }}>Dimensione scacchiera</span>
-              <input type="range" min={300} max={520} value={boardSize} onChange={(e) => setBoardSize(Number(e.target.value))} />
-              <span style={{ fontSize: 12, color: "#6b7280" }}>{boardSize}px</span>
+              <input
+                type="range"
+                min={300}
+                max={700}
+                value={boardSize}
+                onChange={(e) => setBoardSize(Number(e.target.value))}
+              />
+              <span style={{ fontSize: 12, color: "#6b7280" }}>{boardRenderWidth}px</span>
             </div>
           </div>
         </div>
@@ -929,6 +1345,7 @@ export default function App() {
               )}
             </select>
           </div>
+
           <div style={styles.card}>
             <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>Oppure incolla qui il PGN</div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -944,8 +1361,8 @@ export default function App() {
         </div>
 
         <div style={styles.layout}>
-          <div style={styles.left}>
-            {/* rotellina = avanti/indietro mosse */}
+          {/* Pannello sinistro: larghezza ridimensionabile via splitter */}
+          <div style={{ ...styles.left, width: leftWidth }}>
             <div
               onWheel={onWheelNav}
               style={{ borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
@@ -953,24 +1370,32 @@ export default function App() {
             >
               <Chessboard
                 id="main-board"
-                position={boardPosition}
+                position={liveFen}
                 arePiecesDraggable={true}
                 onPieceDrop={applyDrop}
-                boardWidth={boardSize}
-                animationDuration={ANIM_MS}
+                boardWidth={boardRenderWidth}
+                animationDuration={200}
                 customSquareStyles={customSquareStyles}
               />
             </div>
-            <div style={{ textAlign: "center", marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+            <div style={{ textAlign: "center", fontSize: 12, color: "#6b7280" }}>
               Posizione {step}/{Math.max(0, fenHistory.length - 1)}{isAnimating ? " — animazione..." : ""}
             </div>
             {feedback && (
-              <div style={{ marginTop: 8, fontSize: 13, ...(feedback.ok ? styles.feedbackGood : styles.feedbackBad) }}>
+              <div style={{ fontSize: 13, ...(feedback.ok ? styles.feedbackGood : styles.feedbackBad) }}>
                 {feedback.text}
               </div>
             )}
           </div>
 
+          {/* Splitter orizzontale */}
+          <div
+            style={{ ...styles.splitter, ...(dragging ? styles.splitterActive : {}) }}
+            onMouseDown={onSplitDown}
+            title="Trascina per ridimensionare"
+          />
+
+          {/* Pannello destro: ridimensionabile verticalmente */}
           <div style={styles.right} ref={movesPaneRef}>
             {!treeMain ? (
               <div style={{ fontSize: 12, color: "#6b7280" }}>
@@ -982,11 +1407,40 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ marginTop: 16, fontSize: 12, color: "#6b7280" }}>
-          Suggerimento: con le <b>frecce</b> ←/→ oppure la <b>rotellina</b> sulla scacchiera puoi navigare tra le mosse.
-          In <b>Allenamento ON</b> è valida solo la prossima mossa della <b>linea principale</b>.
+        <div style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
+          Suggerimento: passa sopra <span style={styles.fenBadge}>Diagramma</span> per l’anteprima.
+          Le card in alto e il pannello mosse sono ridimensionabili. Trascina lo splitter per variare la larghezza.
         </div>
       </div>
+
+      {/* Tooltip mini-board (se visibile) */}
+      {preview.visible && preview.fen && (
+        <div
+          style={{
+            position: "fixed",
+            left: pvLeft,
+            top: pvTop,
+            width: pvSize,
+            height: pvSize,
+            pointerEvents: "none",
+            zIndex: 9999,
+            boxShadow: "0 6px 20px rgba(0,0,0,.18)",
+            borderRadius: 12,
+            overflow: "hidden",
+            background: "white",
+          }}
+        >
+          <Chessboard
+            id="preview-board"
+            position={preview.fen}
+            boardWidth={pvSize}
+            arePiecesDraggable={false}
+            animationDuration={0}
+            customArrows={[]}
+            customSquareStyles={{}}
+          />
+        </div>
+      )}
     </div>
   );
 }
