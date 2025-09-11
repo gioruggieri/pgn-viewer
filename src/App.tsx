@@ -3,8 +3,14 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 
+// === Nuovi import (file separati) ===
+import { useStockfish } from "./useStockfish";
+import { EvalBar } from "./EvalBar";
+import { EnginePanel } from "./EnginePanel";
+
 /* =====================================================
    PGN utilities — robust tokenizer + game-tree parser
+   (== invariati dal tuo file, salvo piccole aggiunte in fondo)
    ===================================================== */
 
 /** Remove only *semicolon* comments (to end-of-line). Curly comments are kept as tokens. */
@@ -24,31 +30,18 @@ function parseHeaders(pgn: string) {
 /** Compatibilità con marcatori esterni + pulizia detriti engine */
 function preprocessExternalMarkers(pgnText: string) {
   let t = pgnText.replace(/\r\n?/g, "\n");
-
-  // @@StartBracket@@ foo @@EndBracket@@  -> { foo }
   t = t.replace(/@@StartBracket@@([\s\S]*?)@@EndBracket@@/g, (_, inside) => {
     const s = String(inside || "").trim();
     return s ? `{ ${s} }` : "";
   });
-
-  // @@StartFEN@@ ... @@EndFEN@@ -> {FEN: ...}
   t = t.replace(/@@StartFEN@@([\s\S]*?)@@EndFEN@@/g, (_, fen) => {
     const s = String(fen || "").trim();
     return s ? `{FEN: ${s}}` : "";
   });
-
-  // residui isolati
   t = t.replace(/@@(?:Start|End)[A-Za-z]+@@/g, "");
-
-  // ChessBase/engine debris: [%evp ...], [%clk ...], ecc.
   t = t.replace(/\[\%[^\]]*\]/g, "");
-
-  // Marcatori (RR)
   t = t.replace(/\(RR\)/g, "");
-
-  // Parentesi vuote
   t = t.replace(/\(\s*\)/g, "");
-
   return t;
 }
 
@@ -102,7 +95,6 @@ const TT = {
 /** Tokenizer compliant with PGN movetext. */
 function tokenizeMovetext(raw: string) {
   const s = stripSemicolonComments(raw);
-  // supporta sia "...", sia ellissi U+2026
   const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.|…)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
   const tokens: Array<{ t: string; v: string }> = [];
   let m;
@@ -192,20 +184,16 @@ function parseMovetextToTree(moveText: string, startFen?: string): { main: Line;
 
       if (tok.t === TT.RAV_START) {
         const lastNode = line.nodes.length ? line.nodes[line.nodes.length - 1] : null;
-        // default: ancora DOPO l'ultima mossa giocata
         let anchorFen = lastNode ? lastNode.fenAfter : line.startFen;
 
-        // guarda il primo token significativo nella RAV
         let j = idx + 1;
         while (j < tokens.length && (tokens[j].t === TT.COMMENT || tokens[j].t === TT.NAG)) j++;
 
-        // se la variante inizia con un numero di mossa, allinea il turno
         if (j < tokens.length && tokens[j].t === TT.MOVE_NUM && lastNode) {
           const wantsBlack = /…|\.\.\.$/.test(tokens[j].v);
           const desired: "w" | "b" = wantsBlack ? "b" : "w";
           const current = sideFromFen(anchorFen);
           if (current !== desired) {
-            // variante alternativa alla mossa appena giocata: torna PRIMA
             anchorFen = lastNode.fenBefore;
           }
         }
@@ -310,7 +298,7 @@ function parseMovetextToTree(moveText: string, startFen?: string): { main: Line;
 }
 
 /* =====================================================
-   UI styles
+   UI styles (immutati, con micro-estensioni)
    ===================================================== */
 const styles = {
   app: {
@@ -330,7 +318,6 @@ const styles = {
   title: { fontSize: 24, fontWeight: 800 },
   controlsRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const },
 
-  // Pulsanti ben leggibili anche se disabilitati
   btn: {
     padding: "8px 12px",
     borderRadius: 12,
@@ -374,7 +361,6 @@ const styles = {
     cursor: "not-allowed" as const,
   },
 
-  // === Resizable cards (sopra)
   sectionGrid: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
@@ -393,7 +379,6 @@ const styles = {
     minHeight: 120,
   },
 
-  // === Main layout con splitter orizzontale
   layout: { display: "flex", alignItems: "stretch", gap: 8, minHeight: "50vh" },
   left: { display: "flex", flexDirection: "column", gap: 8 },
   splitter: {
@@ -453,7 +438,7 @@ const styles = {
     wordWrap: "break-word" as const,
   },
   token: { marginRight: 6 },
-  tokenMove: { fontWeight: 700, cursor: "pointer" }, // mainline bold ok
+  tokenMove: { fontWeight: 700, cursor: "pointer" },
   tokenActive: {
     background: "#FEF08A",
     border: "1px solid #F59E0B",
@@ -474,7 +459,6 @@ const styles = {
   feedbackBad: { color: "#b91c1c", fontWeight: 700 },
   feedbackGood: { color: "#15803d", fontWeight: 700 },
 
-  // Arena-like rows: colonna numeri più larga e fissa
   row: {
     display: "grid",
     gridTemplateColumns: "60px 1fr",
@@ -498,7 +482,6 @@ const styles = {
   },
   contentCol: { paddingLeft: 4 },
 
-  // Badge FEN
   fenBadge: {
     display: "inline-block",
     padding: "0 6px",
@@ -510,7 +493,6 @@ const styles = {
     marginRight: 6,
   },
 
-  // Vista varianti "ad albero"
   variantBlock: {
     marginTop: 6,
     border: "1px solid #e5e7eb",
@@ -532,11 +514,9 @@ const styles = {
   variantList: { padding: "6px 8px" },
   variantRow: { display: "block", padding: "2px 0", fontSize: 13 },
   variantBullet: { display: "inline-block", width: 14, color: "#6b7280" },
-  // << non bold per le varianti >>
   variantMove: { marginRight: 6, cursor: "pointer", fontWeight: 400 as const },
   variantMoveDim: { color: "#6b7280", fontWeight: 400 as const },
 
-  // intestazione rami
   variantLineHeader: {
     display: "flex",
     alignItems: "baseline",
@@ -567,7 +547,7 @@ export default function App() {
   const liveFen = fenHistory[step] || new Chess().fen();
 
   // === dimensioni/resize ===
-  const [leftWidth, setLeftWidth] = useState(440); // larghezza pannello scacchiera
+  const [leftWidth, setLeftWidth] = useState(440);
   const [dragging, setDragging] = useState(false);
   const startXRef = useRef(0);
   const startWRef = useRef(440);
@@ -634,7 +614,7 @@ export default function App() {
   const [openVars, setOpenVars] = useState<Record<number, boolean>>({});
   const [openLines, setOpenLines] = useState<Record<number, boolean>>({});
 
-  // keep active token visible (centrato)
+  // keep active token visible
   const ensureActiveVisible = (behavior: ScrollBehavior = "smooth") => {
     const pane = movesPaneRef.current;
     if (!pane) return;
@@ -695,8 +675,8 @@ export default function App() {
     setFenHistory(fens);
     setStep(0);
     setActiveNodeId(null);
-    setOpenVars({}); // richiudi varianti all'inizio
-    setOpenLines({}); // reset toggle linee
+    setOpenVars({});
+    setOpenLines({});
   }, [games, gameIndex]);
 
   /* ---------------- Navigation helpers ---------------- */
@@ -780,8 +760,46 @@ export default function App() {
   const flash = (ok: boolean, text: string) => {
     setFeedback({ ok, text });
     if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
-    feedbackTimer.current = setTimeout(() => setFeedback(null), 1200);
+    feedbackTimer.current = setTimeout(() => setFeedback(null), 1400);
   };
+
+  /* =====================================================
+     Engine: stato e integrazione
+     ===================================================== */
+  const { ready, thinking, lines, engineErr, analyze, stop } = useStockfish();
+  const [engineOn, setEngineOn] = useState(false);
+  const [engineDepth, setEngineDepth] = useState(18);
+  const [engineMPV, setEngineMPV] = useState(3);
+
+  // Best-move overlay
+  const [showBestArrow, setShowBestArrow] = useState(false); // toggle utente
+  const [showBestOnce, setShowBestOnce] = useState(false);   // usato dal blunder helper
+  const showBestArrowEffective = showBestArrow || showBestOnce;
+
+  // Rotazione scacchiera
+  const [whiteOrientation, setWhiteOrientation] = useState(true);
+
+  // analizza quando cambia la posizione (se engine ON)
+  useEffect(() => {
+    if (!engineOn || !ready) return;
+    analyze(liveFen, { depth: engineDepth, multipv: engineMPV });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineOn, ready, liveFen, engineDepth, engineMPV]);
+
+  // primo tratto UCI -> freccia [from,to]
+  const bestArrow: [string, string] | null = useMemo(() => {
+    const best = lines?.[0];
+    if (!best || !best.pvUci?.length) return null;
+    const u0 = best.pvUci[0];
+    if (!u0 || u0.length < 4) return null;
+    return [u0.slice(0, 2), u0.slice(2, 4)];
+  }, [lines]);
+
+  // arrows per il board
+  const boardArrows = useMemo(() => {
+    if (!engineOn || !bestArrow || !showBestArrowEffective) return [];
+    return [bestArrow];
+  }, [engineOn, bestArrow, showBestArrowEffective]);
 
   /* ---------------- Training / DnD ---------------- */
   const applyDrop = (sourceSquare: string, targetSquare: string) => {
@@ -807,6 +825,12 @@ export default function App() {
 
         if (!isSame) {
           flash(false, "Mossa sbagliata, riprova.");
+          // Blunder helper: se il motore è acceso e abbiamo la best line, mostra freccia per pochi secondi
+          if (engineOn) {
+            if (!thinking) analyze(baseFen, { depth: engineDepth, multipv: Math.max(1, engineMPV) });
+            setShowBestOnce(true);
+            setTimeout(() => setShowBestOnce(false), 3000);
+          }
           return false;
         }
 
@@ -815,6 +839,8 @@ export default function App() {
         setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
         setStep((s) => s + 1);
         flash(true, "Giusto!");
+        // quando esegui correttamente, togli l’hint “once”
+        setShowBestOnce(false);
         return true;
       }
     }
@@ -824,6 +850,8 @@ export default function App() {
     const newFen = chess.fen();
     setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
     setStep((s) => s + 1);
+    // fuori dal training togli l’hint “once”
+    setShowBestOnce(false);
     return true;
   };
 
@@ -916,7 +944,6 @@ export default function App() {
     );
   }
 
-  /* ---------------- Renderer ricorsivo collassabile per i rami ---------------- */
   function linePreview(line: Line, maxPlies = 6) {
     const parts: string[] = [];
     for (let i = 0; i < Math.min(maxPlies, line.nodes.length); i++) {
@@ -937,28 +964,24 @@ export default function App() {
     depth?: number;
     label: string;
   }) {
-    const open = openLines[line.lid] ?? (depth <= 1); // di default il primo livello è aperto
+    const open = openLines[line.lid] ?? (depth <= 1);
     const toggle = () => setOpenLines((s) => ({ ...s, [line.lid]: !open }));
     const letter = (i: number) => String.fromCharCode("A".charCodeAt(0) + i);
 
     return (
       <div style={variationIndent(depth)}>
-        {/* intestazione del ramo */}
         <div style={styles.variantLineHeader} onClick={toggle}>
           <span>{open ? "▼" : "▶"}</span>
           <span style={styles.variantBullet}>{label}</span>
           <span style={styles.variantPreview}>{linePreview(line)}</span>
         </div>
 
-        {/* contenuto del ramo */}
         {open && (
           <div style={{ paddingLeft: 16 }}>
-            {/* pre-varianti */}
             {(line.preVariations || []).map((pre, x) => (
               <VariantBranchTree key={`pre-${line.lid}-${x}`} line={pre} depth={depth + 1} label={letter(x)} />
             ))}
 
-            {/* sequenza di mosse della linea */}
             {line.nodes.map((n) => {
               const num = n.isWhite ? `${n.moveNumber}.` : `${n.moveNumber}...`;
               const isActive = activeNodeId === n.id || (step > 0 && fenHistory[step] === n.fenAfter);
@@ -976,8 +999,6 @@ export default function App() {
                     {n.san}
                   </span>
                   <CommentTokens texts={n.commentAfter} />
-
-                  {/* sotto-varianti della singola mossa */}
                   {(n.variations || []).map((sub, k) => (
                     <VariantBranchTree key={`sub-${n.id}-${k}`} line={sub} depth={depth + 1} label={letter(k)} />
                   ))}
@@ -1031,7 +1052,7 @@ export default function App() {
     const isActive =
       activeNodeId === node.id || (step > 0 && fenHistory[step] === node.fenAfter);
     const label = node.isWhite ? `${node.moveNumber}.` : `${node.moveNumber}...`;
-    const moveStyle = variant ? styles.variantMove : styles.tokenMove; // << non bold per varianti
+    const moveStyle = variant ? styles.variantMove : styles.tokenMove;
 
     return (
       <>
@@ -1053,7 +1074,7 @@ export default function App() {
   function VariationInline({
     line,
     level = 1,
-    isVariant = true, // << default: siamo in variante
+    isVariant = true,
   }: {
     line: Line;
     level?: number;
@@ -1079,28 +1100,26 @@ export default function App() {
   }) {
     const elements: React.ReactNode[] = [];
 
-    // pre-varianti
     (line.preVariations || []).forEach((v, i) => {
       elements.push(
         <VariationInline
           key={`pre-${(line.startFen || "").slice(0, 16)}-${i}-${level}`}
           line={v}
           level={level + 1}
-          isVariant={true} // << siamo dentro una variante
+          isVariant={true}
         />
       );
     });
 
-    // mosse + sotto-varianti
     line.nodes.forEach((node) => {
-      elements.push(<MoveLabel key={`mv-${node.id}`} node={node} variant={isVariant} />); // << qui
+      elements.push(<MoveLabel key={`mv-${node.id}`} node={node} variant={isVariant} />);
       (node.variations || []).forEach((v, j) => {
         elements.push(
           <VariationInline
             key={`var-${node.id}-${j}-${level}`}
             line={v}
             level={level + 1}
-            isVariant={true} // << anche le sotto-varianti
+            isVariant={true}
           />
         );
       });
@@ -1108,7 +1127,6 @@ export default function App() {
 
     return <>{elements}</>;
   }
-
 
   function RenderMain({ line }: { line: Line }) {
     const rows: React.ReactNode[] = [];
@@ -1140,8 +1158,6 @@ export default function App() {
               {node.san}
             </span>
             <CommentTokens texts={node.commentAfter} />
-
-            {/* Varianti: albero vs in linea */}
             {variantView === 'tree'
               ? (node.variations?.length ? <VariantBlock node={node} /> : null)
               : (node.variations || []).map((v, j) => (
@@ -1161,7 +1177,7 @@ export default function App() {
     return <RenderMain line={treeMain} />;
   }, [treeMain, activeNodeId, fenHistory, step, variantView, openVars, openLines]);
 
-  /* ---------------- Tastiera: frecce SX/DX, Home/Fine ---------------- */
+  /* ---------------- Tastiera ---------------- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -1187,18 +1203,18 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [fenHistory.length]);
 
-  /* ---------------- Rotellina sulla scacchiera ---------------- */
+  /* ---------------- Rotellina ---------------- */
   const lastWheelRef = useRef(0);
   const onWheelNav = (e: React.WheelEvent) => {
     const now = Date.now();
-    if (now - lastWheelRef.current < 110) return; // throttling lieve
+    if (now - lastWheelRef.current < 110) return;
     lastWheelRef.current = now;
 
     if (e.deltaY > 0) animateToStep(stepRef.current + 1);
     else if (e.deltaY < 0) animateToStep(stepRef.current - 1);
   };
 
-  /* ---------------- Helpers per Apri/Chiudi tutto ---------------- */
+  /* ---------------- Helpers Apri/Chiudi tutto ---------------- */
   const hasAnyVariants = useMemo(() => {
     function check(line?: Line | null): boolean {
       if (!line) return false;
@@ -1261,6 +1277,10 @@ export default function App() {
   const pvLeft = Math.min(typeof window !== "undefined" ? window.innerWidth - pvSize - 12 : 0, preview.x + 12);
   const pvTop  = Math.min(typeof window !== "undefined" ? window.innerHeight - pvSize - 12 : 0, preview.y + 12);
 
+  // valutazione corrente (linea #1)
+  const topCp = lines?.[0]?.cp;
+  const topMate = lines?.[0]?.mate;
+
   return (
     <div style={styles.app}>
       <div style={styles.container}>
@@ -1268,11 +1288,13 @@ export default function App() {
           <div>
             <div style={styles.title}>PGN Viewer</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Allenamento sulla linea principale + visualizzazione varianti (cliccabili).
+              Allenamento sulla linea principale + visualizzazione varianti (cliccabili) + analisi motore.
             </div>
           </div>
           <div style={styles.controlsRow}>
             <input type="file" accept=".pgn,.PGN,text/plain" onChange={handleFileChange} />
+
+            {/* Navigazione */}
             <button
               style={btnStyle(step === 0 || isAnimating)}
               onClick={goStart}
@@ -1305,6 +1327,8 @@ export default function App() {
             >
               Fine ⏭
             </button>
+
+            {/* Training toggle */}
             <button
               onClick={() => setTraining((t) => !t)}
               style={{ ...styles.btn, ...(training ? styles.btnToggleOn : styles.btnToggleOff) }}
@@ -1312,6 +1336,8 @@ export default function App() {
             >
               {training ? "Allenamento: ON" : "Allenamento: OFF"}
             </button>
+
+            {/* Varianti view */}
             <button
               onClick={() => setVariantView(v => v === 'tree' ? 'inline' : 'tree')}
               style={styles.btn}
@@ -1320,7 +1346,7 @@ export default function App() {
               Varianti: {variantView === 'tree' ? 'albero' : 'in linea'}
             </button>
 
-            {/* Apri/Chiudi tutto per l'albero */}
+            {/* Apri/Chiudi tutto */}
             <button
               onClick={openAll}
               style={btnStyle(!(variantView === 'tree' && hasAnyVariants))}
@@ -1338,8 +1364,9 @@ export default function App() {
               Chiudi tutto
             </button>
 
+            {/* Board size */}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 12, color: "#6b7280" }}>Dimensione scacchiera</span>
+              <span style={{ fontSize: 12, color: "#6b7280" }}>Scacchiera</span>
               <input
                 type="range"
                 min={300}
@@ -1349,6 +1376,61 @@ export default function App() {
               />
               <span style={{ fontSize: 12, color: "#6b7280" }}>{boardRenderWidth}px</span>
             </div>
+
+            {/* Rotate board */}
+            <button
+              onClick={() => setWhiteOrientation((w) => !w)}
+              style={styles.btn}
+              title="Ruota la scacchiera"
+            >
+              ↻ Ruota
+            </button>
+
+            {/* Engine controls */}
+            <button
+              onClick={() => {
+                const next = !engineOn;
+                setEngineOn(next);
+                if (!next) stop();
+              }}
+              style={{ ...styles.btn, ...(engineOn ? styles.btnToggleOn : styles.btnToggleOff) }}
+              title={ready ? "Accendi/Spegni motore" : "Motore non ancora pronto"}
+            >
+              {engineOn ? "Engine: ON" : "Engine: OFF"}
+            </button>
+
+            <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              Depth
+              <input
+                type="number"
+                min={8}
+                max={35}
+                value={engineDepth}
+                onChange={(e) => setEngineDepth(Number(e.target.value))}
+                style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
+              />
+            </label>
+
+            <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              MultiPV
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={engineMPV}
+                onChange={(e) => setEngineMPV(Number(e.target.value))}
+                style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
+              />
+            </label>
+
+            {/* Best move overlay toggle */}
+            <button
+              onClick={() => setShowBestArrow(s => !s)}
+              style={{ ...styles.btn, ...(showBestArrow ? styles.btnToggleOn : styles.btnToggleOff) }}
+              title="Mostra/Nascondi freccia Best Move del motore"
+            >
+              Best move: {showBestArrow ? "ON" : "OFF"}
+            </button>
           </div>
         </div>
 
@@ -1387,41 +1469,90 @@ export default function App() {
         </div>
 
         <div style={styles.layout}>
-          {/* Pannello sinistro: larghezza ridimensionabile via splitter */}
+          {/* Pannello sinistro: scacchiera + eval bar + engine panel */}
           <div style={{ ...styles.left, width: leftWidth }}>
-            <div
-              onWheel={onWheelNav}
-              style={{ borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
-              title="Usa la rotellina per scorrere le mosse"
-            >
-              <Chessboard
-                id="main-board"
-                position={liveFen}
-                arePiecesDraggable={true}
-                onPieceDrop={applyDrop}
-                boardWidth={boardRenderWidth}
-                animationDuration={200}
-                customSquareStyles={customSquareStyles}
-              />
+            {/* Board + EvalBar */}
+            <div style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 8 }}>
+              {/* Eval Bar (vantaggio White; per Nero è complementare) */}
+              <div style={{ height: boardRenderWidth }}>
+                <EvalBar
+                  cp={topCp}
+                  mate={topMate}
+                  turn={liveFen.split(" ")[1] === "w" ? "w" : "b"}
+                />
+              </div>
+
+              {/* Scacchiera */}
+              <div
+                onWheel={onWheelNav}
+                style={{ borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
+                title="Usa la rotellina per scorrere le mosse"
+              >
+                <Chessboard
+                  id="main-board"
+                  position={liveFen}
+                  arePiecesDraggable={true}
+                  onPieceDrop={applyDrop}
+                  boardWidth={boardRenderWidth}
+                  animationDuration={200}
+                  customSquareStyles={customSquareStyles}
+                  customArrows={boardArrows}
+                  boardOrientation={whiteOrientation ? "white" : "black"}
+                />
+              </div>
             </div>
+
             <div style={{ textAlign: "center", fontSize: 12, color: "#6b7280" }}>
-              Posizione {step}/{Math.max(0, fenHistory.length - 1)}{isAnimating ? " — animazione..." : ""}
+              Posizione {step}/{Math.max(0, fenHistory.length - 1)}{isAnimating ? " — animazione..." : ""}{engineOn ? (thinking ? " — engine..." : "") : ""}
             </div>
             {feedback && (
               <div style={{ fontSize: 13, ...(feedback.ok ? styles.feedbackGood : styles.feedbackBad) }}>
                 {feedback.text}
               </div>
             )}
+
+            {/* Errori motore */}
+            {engineErr && (
+              <div style={{ color: "#b91c1c", fontSize: 12, marginTop: 6 }}>{engineErr}</div>
+            )}
+
+            {/* Pannello varianti del motore */}
+            {engineOn && (
+              <div style={{ marginTop: 8 }}>
+                <EnginePanel
+                  lines={lines}
+                  thinking={thinking}
+                  depth={engineDepth}
+                  onPlayLine={(i) => {
+                    const best = lines[i];
+                    if (!best) return;
+                    try {
+                      const c = new Chess(liveFen);
+                      const newFens = [c.fen()];
+                      for (const san of best.pvSan) {
+                        c.move(san, { sloppy: true });
+                        newFens.push(c.fen());
+                      }
+                      setFenHistory(newFens);
+                      setStep(0);
+                      setActiveNodeId(null);
+                      setTraining(false);
+                      setShowBestOnce(false);
+                    } catch {}
+                  }}
+                />
+              </div>
+            )}
           </div>
 
-          {/* Splitter orizzontale */}
+          {/* Splitter */}
           <div
             style={{ ...styles.splitter, ...(dragging ? styles.splitterActive : {}) }}
             onMouseDown={onSplitDown}
             title="Trascina per ridimensionare"
           />
 
-          {/* Pannello destro: ridimensionabile verticalmente */}
+          {/* Pannello destro: mosse/varianti PGN */}
           <div style={styles.right} ref={movesPaneRef}>
             {!treeMain ? (
               <div style={{ fontSize: 12, color: "#6b7280" }}>
