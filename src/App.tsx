@@ -382,7 +382,7 @@ const styles = {
   layout: { display: "flex", alignItems: "stretch", gap: 8, minHeight: "50vh" },
   left: { display: "flex", flexDirection: "column", gap: 8 },
   splitter: {
-    width: 6,
+    width: 10,
     cursor: "col-resize",
     alignSelf: "stretch",
     background: "#e5e7eb",
@@ -548,13 +548,17 @@ export default function App() {
 
   // === dimensioni/resize ===
   const [leftWidth, setLeftWidth] = useState(440);
+  const layoutRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
+const draggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWRef = useRef(440);
   const minLeft = 320;
-  const maxLeft = 820;
+  let maxLeft = 820;
 
-  const onSplitDown = (e: React.MouseEvent) => {
+  const onSplitDown = (e: React.MouseEvent) => {  draggingRef.current = true;
+
+    try { document.body.style.userSelect = "none"; document.body.style.cursor = "col-resize"; } catch {}
     setDragging(true);
     startXRef.current = e.clientX;
     startWRef.current = leftWidth;
@@ -563,13 +567,18 @@ export default function App() {
     e.preventDefault();
   };
   const onSplitMove = (e: MouseEvent) => {
-    if (!dragging) return;
+    if (!draggingRef.current) return;
     const dx = e.clientX - startXRef.current;
-    const next = Math.min(maxLeft, Math.max(minLeft, startWRef.current + dx));
+    const containerW = layoutRef.current?.clientWidth || window.innerWidth;
+    const rightMin = 360; // minimo spazio pannello destro
+    const dynMaxLeft = Math.max(minLeft, Math.min(containerW - rightMin, 1200));
+    const next = Math.min(dynMaxLeft, Math.max(minLeft, startWRef.current + dx));
     setLeftWidth(next);
   };
   const onSplitUp = () => {
     setDragging(false);
+  draggingRef.current = false;
+    try { document.body.style.userSelect = ""; document.body.style.cursor = ""; } catch {}
     window.removeEventListener("mousemove", onSplitMove);
     window.removeEventListener("mouseup", onSplitUp);
   };
@@ -582,10 +591,30 @@ export default function App() {
 
   // Board size (slider) + clamp alla colonna sinistra
   const [boardSize, setBoardSize] = useState(400);
-  const boardRenderWidth = Math.min(boardSize, Math.floor(leftWidth));
+  const boardCellRef = useRef<HTMLDivElement | null>(null);
+  const [autoBoardWidth, setAutoBoardWidth] = useState(400);
+  const boardRenderWidth = Math.min(boardSize, Math.floor(autoBoardWidth));
+
+  // ResizeObserver: adatta automaticamente la board alla larghezza utile
+  useEffect(() => {
+    const el = boardCellRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const w = Math.max(0, Math.floor(entry.contentRect.width));
+        setAutoBoardWidth(w || 0);
+      }
+    });
+    ro.observe(el);
+    // init
+    const rect = el.getBoundingClientRect?.();
+    if (rect?.width) setAutoBoardWidth(Math.floor(rect.width));
+    return () => { try { ro.disconnect(); } catch {} };
+  }, []);
+
 
   // training & feedback
-  const [training, setTraining] = useState(true);
+  const [training, setTraining] = useState(false);
   const [feedback, setFeedback] = useState<null | { ok: boolean; text: string }>(null);
   const feedbackTimer = useRef<any>(null);
   useEffect(() => () => { if (feedbackTimer.current) clearTimeout(feedbackTimer.current); }, []);
@@ -770,6 +799,12 @@ export default function App() {
   const [engineOn, setEngineOn] = useState(false);
   const [engineDepth, setEngineDepth] = useState(18);
   const [engineMPV, setEngineMPV] = useState(3);
+  // === Play vs Engine ===
+  const [playVsEngine, setPlayVsEngine] = useState(false);
+  const [engineSide, setEngineSide] = useState<'w'|'b'>('b');
+  const [engineMovePending, setEngineMovePending] = useState(false);
+  const lastEngineAnalyzeFenRef = useRef<string>("");
+
 
   // Best-move overlay
   const [showBestArrow, setShowBestArrow] = useState(false); // toggle utente
@@ -786,7 +821,53 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engineOn, ready, liveFen, engineDepth, engineMPV]);
 
-  // primo tratto UCI -> freccia [from,to]
+  
+  // === VS Engine: trigger analisi solo quando è il turno del motore e serve ===
+  useEffect(() => {
+    if (!playVsEngine || !engineOn || !ready) return;
+    try {
+      const c = new Chess(liveFen);
+      if (c.turn() !== engineSide) return;
+      if (!engineMovePending && !thinking && lastEngineAnalyzeFenRef.current !== liveFen) {
+        lastEngineAnalyzeFenRef.current = liveFen;
+        setEngineMovePending(true);
+        analyze(liveFen, { depth: engineDepth, multipv: 1 });
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playVsEngine, engineOn, ready, liveFen, engineSide, engineDepth, analyze, thinking, engineMovePending]);
+
+  // === VS Engine: quando l'analisi è pronta, gioca una sola mossa (pvSan[0]) ===
+  useEffect(() => {
+    if (!playVsEngine || !engineOn || !ready) return;
+    if (!engineMovePending) return;
+    if (thinking) return;
+    try {
+      const bestSan = lines?.[0]?.pvSan?.[0];
+      if (!bestSan) return;
+      const c2 = new Chess(liveFen);
+      const ok = c2.move(bestSan, { sloppy: true });
+      if (ok) {
+        const newFen = c2.fen();
+        setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
+        setStep((s) => s + 1);
+        setEngineMovePending(false);
+        setShowBestOnce(false);
+      } else {
+        setEngineMovePending(false);
+      }
+    } catch { setEngineMovePending(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playVsEngine, engineOn, ready, engineMovePending, thinking, lines, liveFen]);
+
+  // Reset guardie quando spegni VS Engine o l'engine
+  useEffect(() => {
+    if (!playVsEngine || !engineOn) {
+      setEngineMovePending(false);
+      lastEngineAnalyzeFenRef.current = "";
+    }
+  }, [playVsEngine, engineOn]);
+// primo tratto UCI -> freccia [from,to]
   const bestArrow: [string, string] | null = useMemo(() => {
     const best = lines?.[0];
     if (!best || !best.pvUci?.length) return null;
@@ -801,16 +882,35 @@ export default function App() {
     return [bestArrow];
   }, [engineOn, bestArrow, showBestArrowEffective]);
 
-  /* ---------------- Training / DnD ---------------- */
+  
+  // ==== react-chessboard v5: onPieceDrop(args) -> boolean
+  const onPieceDrop = ({ sourceSquare, targetSquare }: any) => {
+    if (!targetSquare) return false;
+    if (sourceSquare === targetSquare) return false; // snapback: nessuna mossa
+    try {
+      return !!applyDrop(sourceSquare, targetSquare);
+    } catch {
+      return false;
+    }
+  };
+
+/* ---------------- Training / DnD ---------------- */
   const applyDrop = (sourceSquare: string, targetSquare: string) => {
+    if (sourceSquare === targetSquare) return false;
     const baseFen = fenHistory[stepRef.current];
     const chess = new Chess(baseFen);
+    // VS Engine: consenti solo mosse umane nel loro turno
+    if (playVsEngine) {
+      const humanSide = engineSide === 'w' ? 'b' : 'w';
+      if (chess.turn() !== humanSide) { flash(false, "È il turno del motore."); return false; }
+    }
+
 
     if (training && stepRef.current < mainlinePlies.length) {
       let expected: any = null;
       try {
         const tmp = new Chess(baseFen);
-        expected = tmp.move(mainlinePlies[stepRef.current].sanClean, { sloppy: true });
+        try { expected = tmp.move(mainlinePlies[stepRef.current].sanClean, { sloppy: true }); } catch { expected = null; }
       } catch {}
       if (expected) {
         const userMove = {
@@ -834,23 +934,28 @@ export default function App() {
           return false;
         }
 
-        chess.move(userMove);
+        try { chess.move(userMove); } catch { return false; }
         const newFen = chess.fen();
         setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
         setStep((s) => s + 1);
         flash(true, "Giusto!");
         // quando esegui correttamente, togli l’hint “once”
+        if (playVsEngine) setEngineMovePending(true);
         setShowBestOnce(false);
         return true;
       }
     }
 
-    const move = chess.move({ from: sourceSquare, to: targetSquare, promotion: "q" });
+    let move: any = null;
+    try {
+      move = chess.move({ from: sourceSquare, to: targetSquare, promotion: "q" });
+    } catch { move = null; }
     if (!move) return false;
     const newFen = chess.fen();
     setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
     setStep((s) => s + 1);
     // fuori dal training togli l’hint “once”
+    if (playVsEngine) setEngineMovePending(true);
     setShowBestOnce(false);
     return true;
   };
@@ -868,6 +973,21 @@ export default function App() {
     const result = hdrs.Result ? ` (${hdrs.Result})` : "";
     return `${white} vs ${black}${event}${result}`;
   };
+
+  // === Reset partita / nuova partita ===
+  const resetGame = () => {
+    try { stop(); } catch {}
+    const startFen = new Chess().fen();
+    setFenHistory([startFen]);
+    setStep(0);
+    setActiveNodeId(null);
+    setTraining(false);
+    setFeedback(null);
+    setShowBestOnce(false);
+    setEngineMovePending(false);
+    lastEngineAnalyzeFenRef.current = "";
+  };
+
 
   /* ---------------- Commenti con badge + anteprima FEN ---------------- */
   function CommentTokens({ texts }: { texts?: string[] }) {
@@ -1293,6 +1413,14 @@ export default function App() {
           </div>
           <div style={styles.controlsRow}>
             <input type="file" accept=".pgn,.PGN,text/plain" onChange={handleFileChange} />
+            <button
+              onClick={resetGame}
+              style={btnStyle(false)}
+              title="Nuova Partita (posizione iniziale)"
+            >
+              🆕 Nuova Partita
+            </button>
+
 
             {/* Navigazione */}
             <button
@@ -1421,6 +1549,37 @@ export default function App() {
                 onChange={(e) => setEngineMPV(Number(e.target.value))}
                 style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
               />
+
+            {/* VS Engine controls */}
+            <button
+              onClick={() => {
+                const next = !playVsEngine;
+                setPlayVsEngine(next);
+                setTraining(false);
+                setShowBestOnce(false);
+                if (!next) {
+                  setEngineMovePending(false);
+                  lastEngineAnalyzeFenRef.current = "";
+                } else {
+                  lastEngineAnalyzeFenRef.current = "";
+                }
+              }}
+              style={{ ...styles.btn, ...(playVsEngine ? styles.btnToggleOn : styles.btnToggleOff) }}
+              title="Gioca contro il motore"
+            >
+              VS Engine: {playVsEngine ? "ON" : "OFF"}
+            </button>
+
+            <select
+              style={styles.select}
+              value={engineSide}
+              onChange={(e) => setEngineSide(((e.target.value === "w" ? "w" : "b") as 'w'|'b'))}
+              title="Colore del motore"
+            >
+              <option value="w">Motore: Bianco</option>
+              <option value="b">Motore: Nero</option>
+            </select>
+
             </label>
 
             {/* Best move overlay toggle */}
@@ -1468,9 +1627,9 @@ export default function App() {
           </div>
         </div>
 
-        <div style={styles.layout}>
+        <div style={styles.layout} ref={layoutRef}>
           {/* Pannello sinistro: scacchiera + eval bar + engine panel */}
-          <div style={{ ...styles.left, width: leftWidth }}>
+          <div style={{ ...styles.left, flex: `0 0 ${leftWidth}px` }}>
             {/* Board + EvalBar */}
             <div style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 8 }}>
               {/* Eval Bar (vantaggio White; per Nero è complementare) */}
@@ -1483,22 +1642,30 @@ export default function App() {
               </div>
 
               {/* Scacchiera */}
-              <div
+              <div ref={boardCellRef} style={{ width: "100%" }}>
+                <div
                 onWheel={onWheelNav}
-                style={{ borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
+                style={{ width: boardRenderWidth, height: boardRenderWidth,  borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
                 title="Usa la rotellina per scorrere le mosse"
               >
                 <Chessboard
-                  id="main-board"
-                  position={liveFen}
-                  arePiecesDraggable={true}
-                  onPieceDrop={applyDrop}
-                  boardWidth={boardRenderWidth}
-                  animationDuration={200}
-                  customSquareStyles={customSquareStyles}
-                  customArrows={boardArrows}
-                  boardOrientation={whiteOrientation ? "white" : "black"}
+                  options={{
+                    id: 'main-board',
+                    position: liveFen,
+                    onPieceDrop, // firma v5: ({ sourceSquare, targetSquare }) => boolean
+                    boardWidth: boardRenderWidth,
+                    animationDuration: 200,
+                    squareStyles: customSquareStyles, // ex customSquareStyles
+                    arrows: (boardArrows || []).map(([from, to]: any) => ({
+                      startSquare: from,
+                      endSquare: to,
+                      color: 'rgb(0, 128, 0)',
+                    })), // ex customArrows
+                    boardOrientation: whiteOrientation ? 'white' : 'black',
+                  }}
                 />
+
+                </div>
               </div>
             </div>
 
@@ -1588,14 +1755,17 @@ export default function App() {
           }}
         >
           <Chessboard
-            id="preview-board"
-            position={preview.fen}
-            boardWidth={pvSize}
-            arePiecesDraggable={false}
-            animationDuration={0}
-            customArrows={[]}
-            customSquareStyles={{}}
+            options={{
+              id: 'preview-board',
+              position: preview.fen,
+              onPieceDrop: undefined,
+              boardWidth: pvSize,
+              animationDuration: 0,
+              arrows: [],
+              squareStyles: {},
+            }}
           />
+
         </div>
       )}
     </div>
