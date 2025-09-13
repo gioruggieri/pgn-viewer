@@ -317,6 +317,7 @@ const styles = {
   },
   title: { fontSize: 24, fontWeight: 800 },
   controlsRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const },
+            engineRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap" as const },
 
   btn: {
     padding: "8px 12px",
@@ -1514,6 +1515,7 @@ const draggingRef = useRef(false);
               ↻ Ruota
             </button>
 
+            <div style={styles.engineRow}>
             {/* Engine controls */}
             <button
               onClick={() => {
@@ -1581,6 +1583,9 @@ const draggingRef = useRef(false);
             </select>
 
             </label>
+
+            
+            </div>
 
             {/* Best move overlay toggle */}
             <button
