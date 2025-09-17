@@ -849,6 +849,9 @@ export default function App() {
     setActiveNodeId(null);
     setOpenVars({});
     setOpenLines({});
+    // Resetta anche lo stato per click and move
+    setMoveFrom('');
+    setOptionSquares({});
   }, [games, gameIndex]);
 
   /* ---------------- Navigation helpers ---------------- */
@@ -920,13 +923,44 @@ export default function App() {
   }, [fenHistory, step]);
 
   const customSquareStyles = useMemo(() => {
-    const s: Record<string, any> = {};
+    const s: Record<string, React.CSSProperties> = {};
     if (lastFromTo) {
       s[lastFromTo.from] = { background: "rgba(250, 204, 21, 0.45)" };
       s[lastFromTo.to] = { background: "rgba(250, 204, 21, 0.75)" };
     }
     return s;
   }, [lastFromTo]);
+
+  const isCheckmate = useMemo(() => {
+    try {
+      const game = new Chess(liveFen);
+      if (typeof (game as any).isCheckmate === "function") return game.isCheckmate();
+      if (typeof (game as any).in_checkmate === "function") return (game as any).in_checkmate();
+      return false;
+    } catch {
+      return false;
+    }
+  }, [liveFen]);
+
+  const checkmatedColor = isCheckmate ? (liveFen.split(" ")[1] ?? null) : null;
+
+  const checkmatedKingSquare = useMemo(() => {
+    if (!isCheckmate || !checkmatedColor) return null;
+    try {
+      const game = new Chess(liveFen);
+      const board = game.board();
+      const files = "abcdefgh";
+      for (let rank = 0; rank < board.length; rank++) {
+        for (let file = 0; file < board[rank].length; file++) {
+          const piece = board[rank][file];
+          if (piece && piece.type === "k" && piece.color === checkmatedColor) {
+            return `${files[file]}${8 - rank}`;
+          }
+        }
+      }
+    } catch {}
+    return null;
+  }, [isCheckmate, checkmatedColor, liveFen]);
 
   // messaggi brevi
   const flash = (ok: boolean, text: string) => {
@@ -1025,11 +1059,173 @@ export default function App() {
     return [bestArrow];
   }, [engineOn, bestArrow, showBestArrowEffective]);
 
+  const mateMessage = isCheckmate ? `Scacco matto! Vince ${checkmatedColor === "w" ? "il Nero" : "il Bianco"}.` : null;
+
+  const statusExtras: string[] = [];
+  if (isAnimating) statusExtras.push("animazione...");
+  if (engineOn && thinking) statusExtras.push("engine...");
+  const statusLine = `Posizione ${step}/${Math.max(0, fenHistory.length - 1)}${statusExtras.length ? " — " + statusExtras.join(" — ") : ""}`;
+  // === Click and Move functionality ===
+  const [moveFrom, setMoveFrom] = useState('');
+  const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
+  const baseSquareStyles = useMemo(() => {
+    const styles: Record<string, React.CSSProperties> = { ...customSquareStyles };
+    if (checkmatedKingSquare) {
+      const prev = styles[checkmatedKingSquare] || {};
+      styles[checkmatedKingSquare] = {
+        ...prev,
+        outline: "2px solid rgba(220,38,38,0.9)",
+        boxShadow: "0 0 0 4px rgba(220,38,38,0.45)",
+      };
+    }
+    return styles;
+  }, [customSquareStyles, checkmatedKingSquare]);
+
+  const boardSquareStyles = useMemo(() => ({ ...baseSquareStyles, ...optionSquares }), [baseSquareStyles, optionSquares]);
+
+  const checkmatePieces = useMemo(() => {
+    if (!checkmatedColor) return undefined;
+    const pieceId = checkmatedColor === "w" ? "wK" : "bK";
+    const MateKing = ({ squareWidth }: { squareWidth: number }) => (
+      <div
+        style={{
+          fontSize: squareWidth * 0.78,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#dc2626",
+          textShadow: "0 2px 6px rgba(0,0,0,0.45)",
+        }}
+      >
+        {checkmatedColor === "w" ? "♔" : "♚"}
+        <span style={{ fontSize: squareWidth * 0.45, marginLeft: 2 }}>☠</span>
+      </div>
+    );
+    return { [pieceId]: MateKing };
+  }, [checkmatedColor]);
+
+  
+  // create a chess game using a ref to always have access to the latest game state
+  const chessGameRef = useRef(new Chess(liveFen));
+  
+  // update the chess game ref when liveFen changes
+  useEffect(() => {
+    chessGameRef.current = new Chess(liveFen);
+    // Resetta anche lo stato per click and move
+    setMoveFrom('');
+    setOptionSquares({});
+  }, [liveFen]);
+  
+  // get the move options for a square to show valid moves
+  function getMoveOptions(square: string) {
+    // get the moves for the square
+    const moves = chessGameRef.current.moves({
+      square,
+      verbose: true
+    });
+
+    // if no moves, clear the option squares
+    if (moves.length === 0) {
+      setOptionSquares({});
+      return false;
+    }
+
+    // create a new object to store the option squares
+    const newSquares: Record<string, React.CSSProperties> = {};
+
+    // loop through the moves and set the option squares
+    for (const move of moves) {
+      newSquares[move.to] = {
+        background: chessGameRef.current.get(move.to) && chessGameRef.current.get(move.to)?.color !== chessGameRef.current.get(square)?.color ? 'radial-gradient(circle, rgba(0,0,0,.1) 85%, transparent 85%)' // larger circle for capturing
+          : 'radial-gradient(circle, rgba(0,0,0,.1) 25%, transparent 25%)',
+        // smaller circle for moving
+        borderRadius: '50%'
+      };
+    }
+
+    // set the square clicked to move from to yellow
+    newSquares[square] = {
+      background: 'rgba(255, 255, 0, 0.4)'
+    };
+
+    // set the option squares
+    setOptionSquares(newSquares);
+
+    // return true to indicate that there are move options
+    return true;
+  }
+  
+  // handle square click for click and move
+  function onSquareClick({ square, piece }: any) {
+    // Se clicchiamo sulla stessa casella da cui abbiamo iniziato, annulla la selezione
+    if (moveFrom === square) {
+      setMoveFrom('');
+      setOptionSquares({});
+      return;
+    }
+
+    // Se non abbiamo ancora selezionato un pezzo e clicchiamo su una casella con un pezzo
+    if (!moveFrom && piece) {
+      // get the move options for the square
+      const hasMoveOptions = getMoveOptions(square);
+
+      // if move options, set the moveFrom to the square
+      if (hasMoveOptions) {
+        setMoveFrom(square);
+      }
+
+      // return early
+      return;
+    }
+
+    // Se abbiamo già selezionato un pezzo e clicchiamo su una casella di destinazione
+    // square clicked to move to, check if valid move
+    const moves = chessGameRef.current.moves({
+      square: moveFrom,
+      verbose: true
+    });
+    const foundMove = moves.find(m => m.from === moveFrom && m.to === square);
+
+    // not a valid move
+    if (!foundMove) {
+      // check if clicked on new piece
+      const hasMoveOptions = getMoveOptions(square);
+
+      // if new piece, setMoveFrom, otherwise clear moveFrom
+      setMoveFrom(hasMoveOptions ? square : '');
+
+      // return early
+      return;
+    }
+
+    // is normal move - prova ad eseguire la mossa
+    const success = applyDrop(moveFrom, square);
+    if (success) {
+      setMoveFrom('');
+      setOptionSquares({});
+      return;
+    }
+
+    const hasMoveOptions = getMoveOptions(square);
+    if (hasMoveOptions) {
+      setMoveFrom(square);
+      return;
+    }
+
+    const stillHas = getMoveOptions(moveFrom);
+    if (!stillHas) {
+      setMoveFrom('');
+      setOptionSquares({});
+    } else {
+      setMoveFrom(moveFrom);
+    }
+  }
   
   // ==== react-chessboard v5: onPieceDrop(args) -> boolean
   const onPieceDrop = ({ sourceSquare, targetSquare }: any) => {
     if (!targetSquare) return false;
     if (sourceSquare === targetSquare) return false; // snapback: nessuna mossa
+    
     try {
       return !!applyDrop(sourceSquare, targetSquare);
     } catch {
@@ -1078,9 +1274,31 @@ export default function App() {
 
         try { chess.move(userMove); } catch { return false; }
         const newFen = chess.fen();
-        setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
-        setStep((s) => s + 1);
+
+        let autoApplied = false;
+        let autoFen: string | null = null;
+        const nextIndex = stepRef.current + 1;
+        const replyPly = mainlinePlies[nextIndex];
+        if (replyPly && replyPly.isWhite !== expected.isWhite) {
+          try {
+            chess.move(replyPly.sanClean, { sloppy: true });
+            autoFen = chess.fen();
+            autoApplied = true;
+          } catch {
+            try { chess.load(newFen); } catch {}
+          }
+        }
+
+        setFenHistory((prev) => {
+          const head = prev.slice(0, stepRef.current + 1);
+          if (autoApplied && autoFen) return [...head, newFen, autoFen];
+          return [...head, newFen];
+        });
+        setStep((s) => s + (autoApplied ? 2 : 1));
+        chessGameRef.current = new Chess(autoApplied && autoFen ? autoFen : newFen);
         flash(true, "Giusto!");
+        setMoveFrom('');
+        setOptionSquares({});
         // quando esegui correttamente, togli l'hint "once"
         if (playVsEngine) setEngineMovePending(true);
         setShowBestOnce(false);
@@ -1096,6 +1314,7 @@ export default function App() {
     const newFen = chess.fen();
     setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
     setStep((s) => s + 1);
+    chessGameRef.current = new Chess(newFen);
     // fuori dal training togli l'hint "once"
     if (playVsEngine) setEngineMovePending(true);
     setShowBestOnce(false);
@@ -1128,6 +1347,10 @@ export default function App() {
     setShowBestOnce(false);
     setEngineMovePending(false);
     lastEngineAnalyzeFenRef.current = "";
+    // Resetta anche lo stato per click and move
+    setMoveFrom('');
+    setOptionSquares({});
+    chessGameRef.current = new Chess(startFen);
   };
 
   /* ---------------- Commenti con badge + anteprima FEN ---------------- */
@@ -1152,6 +1375,10 @@ export default function App() {
                     setStep(0);
                     setActiveNodeId(null);
                     setTraining(false);
+                    // Resetta anche lo stato per click and move
+                    setMoveFrom('');
+                    setOptionSquares({});
+                    chessGameRef.current = new Chess(newFen);
                   } catch {}
                 }}
                 onMouseEnter={(e) => showPreview(fen, e)}
@@ -1185,7 +1412,7 @@ export default function App() {
     return (
       <div style={styles.variantBlock}>
         <div style={styles.variantHeader} onClick={toggle}>
-          <span>{open ? "▼" : "▶"}</span>
+          <span>{open ? "?" : "?"}</span>
           <span>Varianti</span>
           <span style={styles.variantCount}>({vars.length})</span>
         </div>
@@ -1232,7 +1459,7 @@ export default function App() {
     return (
       <div style={variationIndent(depth)}>
         <div style={styles.variantLineHeader} onClick={toggle}>
-          <span>{open ? "▼" : "▶"}</span>
+          <span>{open ? "?" : "?"}</span>
           <span style={styles.variantBullet}>{label}</span>
           <span style={styles.variantPreview}>{linePreview(line)}</span>
         </div>
@@ -1289,7 +1516,7 @@ export default function App() {
 
     const startFen = node.lineRef?.startFen || fenHistory[0];
     const chess = new Chess(startFen);
-    const fens = [chess.fen()];
+    const fens: string[] = [chess.fen()];
 
     for (const p of path) {
       try { chess.move(p.sanClean, { sloppy: true }); fens.push(chess.fen()); } catch {}
@@ -1305,6 +1532,10 @@ export default function App() {
     setFenHistory(fens);
     setStep(path.length);
     setActiveNodeId(node.id);
+    // Resetta anche lo stato per click and move
+    setMoveFrom('');
+    setOptionSquares({});
+    chessGameRef.current = new Chess(fens[fens.length - 1]);
 
     requestAnimationFrame(() => ensureActiveVisible("smooth"));
   };
@@ -1695,6 +1926,10 @@ export default function App() {
                   setActiveNodeId(null);
                   setTraining(false);
                   setShowBestOnce(false);
+                  // Resetta anche lo stato per click and move
+                  setMoveFrom('');
+                  setOptionSquares({});
+                  chessGameRef.current = new Chess(newFens[newFens.length - 1]);
                 } catch {}
               }}
             />
@@ -1871,9 +2106,11 @@ export default function App() {
                     id: "main-board",
                     position: liveFen,
                     onPieceDrop,
+                    onSquareClick,
                     boardWidth: boardRenderWidth,
                     animationDuration: 200,
-                    squareStyles: customSquareStyles,
+                    squareStyles: boardSquareStyles,
+                    customPieces: checkmatePieces,
                     arrows: (boardArrows || []).map(([from, to]) => ({
                       startSquare: from,
                       endSquare: to,
@@ -1919,11 +2156,12 @@ export default function App() {
               Fine
             </button>
           </div>
-          <div style={styles.mInfoText}>
-            Posizione {step}/{Math.max(0, fenHistory.length - 1)}
-            {isAnimating ? " — animazione..." : ""}
-            {engineOn ? (thinking ? " — engine..." : "") : ""}
-          </div>
+          <div style={styles.mInfoText}>{statusLine}</div>
+          {mateMessage && (
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#dc2626" }}>
+              {mateMessage}
+            </div>
+          )}
           {feedback && (
             <div style={{ fontSize: 13, ...(feedback.ok ? styles.feedbackGood : styles.feedbackBad) }}>
               {feedback.text}
@@ -2205,9 +2443,11 @@ export default function App() {
                       id: 'main-board',
                       position: liveFen,
                       onPieceDrop, // firma v5: ({ sourceSquare, targetSquare }) => boolean
+                      onSquareClick,
                       boardWidth: boardRenderWidth,
                       animationDuration: 200,
-                      squareStyles: customSquareStyles, // ex customSquareStyles
+                      squareStyles: boardSquareStyles,
+                      customPieces: checkmatePieces,
                       arrows: (boardArrows || []).map(([from, to]: any) => ({
                         startSquare: from,
                         endSquare: to,
@@ -2220,9 +2460,12 @@ export default function App() {
               </div>
             </div>
 
-            <div style={{ textAlign: "center", fontSize: 12, color: "#6b7280" }}>
-              Posizione {step}/{Math.max(0, fenHistory.length - 1)}{isAnimating ? " — animazione..." : ""}{engineOn ? (thinking ? " — engine..." : "") : ""}
-            </div>
+            <div style={{ textAlign: "center", fontSize: 12, color: "#6b7280" }}>{statusLine}</div>
+            {mateMessage && (
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#dc2626" }}>
+                {mateMessage}
+              </div>
+            )}
             {feedback && (
               <div style={{ fontSize: 13, ...(feedback.ok ? styles.feedbackGood : styles.feedbackBad) }}>
                 {feedback.text}
@@ -2256,6 +2499,10 @@ export default function App() {
                       setActiveNodeId(null);
                       setTraining(false);
                       setShowBestOnce(false);
+                      // Resetta anche lo stato per click and move
+                      setMoveFrom('');
+                      setOptionSquares({});
+                      chessGameRef.current = new Chess(newFens[newFens.length - 1]);
                     } catch {}
                   }}
                 />
@@ -2321,3 +2568,5 @@ export default function App() {
     </div>
   );
 }
+
+

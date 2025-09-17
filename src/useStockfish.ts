@@ -77,10 +77,11 @@ function defaultOnMessageFactory(params: {
         if (mMate) line.mate = Number(mMate[1]);
         else if (mCp) line.cp = Number(mCp[1]);
 
-        setLines(prev => {
-          const copy = [...prev];
-          copy[recIdx - 1] = line;
-          return copy;
+        setLines((prev) => {
+          const filtered = (prev || []).filter((existing) => existing && existing.id !== line.id);
+          filtered.push(line);
+          filtered.sort((a, b) => (a?.id ?? 0) - (b?.id ?? 0));
+          return filtered;
         });
       } catch (err) {
         setEngineErr("Parse info error: " + String((err as any)?.message ?? err));
