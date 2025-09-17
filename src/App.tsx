@@ -8,6 +8,22 @@ import { useStockfish } from "./useStockfish";
 import { EvalBar } from "./EvalBar";
 import { EnginePanel } from "./EnginePanel";
 
+function detectMobile() {
+  if (typeof window === "undefined") return false;
+  try {
+    const qs = new URLSearchParams(window.location.search);
+    if (qs.has("desktop")) return false;
+    if (qs.has("mobile")) return true;
+  } catch {}
+  const coarse = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(pointer: coarse)").matches : false;
+  const touchPoints = typeof navigator !== "undefined" ? navigator.maxTouchPoints || 0 : 0;
+  const hasTouch = coarse || touchPoints > 0;
+  if (!hasTouch) return false;
+  const width = typeof window !== "undefined" ? window.innerWidth || 0 : 0;
+  const narrow = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(max-width: 920px)").matches : false;
+  return narrow || width <= 920;
+}
+
 /* =====================================================
    PGN utilities — robust tokenizer + game-tree parser
    (== invariati dal tuo file, salvo piccole aggiunte in fondo)
@@ -317,7 +333,7 @@ const styles = {
   },
   title: { fontSize: 24, fontWeight: 800 },
   controlsRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const },
-            engineRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap" as const },
+  engineRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap" as const },
 
   btn: {
     padding: "8px 12px",
@@ -358,7 +374,7 @@ const styles = {
   btnDisabled: {
     background: "#f3f4f6",
     borderColor: "#e5e7eb",
-    color: "#9ca3af",
+    color: "#191a1bff",
     cursor: "not-allowed" as const,
   },
 
@@ -527,6 +543,74 @@ const styles = {
     padding: "2px 0",
   },
   variantPreview: { fontSize: 13, fontWeight: 400 as const },
+  mApp: { display: "flex", flexDirection: "column", gap: 12, background: "#f7f7fb", minHeight: "100vh", padding: 12 },
+  mHeader: { display: "grid", gap: 6 },
+  mHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  mHeaderActions: { display: "flex", gap: 8 },
+  mFileButton: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "10px 14px",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "solid" as const,
+    borderColor: "#d1d5db",
+    background: "#fff",
+    fontWeight: 600,
+    color: "#1f2937",
+  },
+  mAccentButton: {
+    padding: "10px 14px",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "solid" as const,
+    borderColor: "#1d4ed8",
+    background: "#2563eb",
+    color: "#fff",
+    fontWeight: 600,
+  },
+  mBoardWrap: { display: "grid", gap: 12 },
+  mNavRow: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
+  mNavBtn: {
+    padding: "12px 8px",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "solid" as const,
+    borderColor: "#d1d5db",
+    background: "#ffffffff",
+    fontWeight: 600,
+    fontSize: 13,
+  },
+  mTabsRow: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
+  mTabBtn: {
+    padding: "10px 8px",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderStyle: "solid" as const,
+    borderColor: "#d1d5db",
+    background: "#ffffffff",
+    fontWeight: 600,
+    fontSize: 13,
+    color: "#1f2937",
+  },
+  mTabBtnActive: { background: "#2563eb", color: "#fff", borderColor: "#1d4ed8" },
+  mTabPanel: { background: "#fff", borderRadius: 16, padding: 12, boxShadow: "0 8px 24px rgba(15,23,42,0.12)", display: "grid", gap: 12 },
+  mChipRow: { display: "flex", flexWrap: "wrap", gap: 8 },
+  mInfoText: { fontSize: 12, color: "#6b7280" },
+  mChip: {
+    padding: "10px 12px",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "solid" as const,
+    borderColor: "#d1d5db",
+    background: "#ffffffff",
+    fontWeight: 600,
+    fontSize: 13,
+    color: "#1f2937",
+    cursor: "pointer",
+  },
+
 } as const;
 
 const variationIndent = (level: number) => ({ marginLeft: level * 16 });
@@ -539,8 +623,11 @@ export default function App() {
   const [games, setGames] = useState<string[]>([]);
   const [gameIndex, setGameIndex] = useState(0);
   const [headers, setHeaders] = useState<Record<string, string>>({});
+  const [isMobile, setIsMobile] = useState(() => detectMobile());
+  const [mobileTab, setMobileTab] = useState<'moves' | 'pgn' | 'engine' | 'settings'>('moves');
 
   const [treeMain, setTreeMain] = useState<Line | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [mainlinePlies, setMainlinePlies] = useState<PlyNode[]>([]);
 
   const [fenHistory, setFenHistory] = useState<string[]>([new Chess().fen()]);
@@ -551,14 +638,14 @@ export default function App() {
   const [leftWidth, setLeftWidth] = useState(440);
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
-const draggingRef = useRef(false);
+  const draggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWRef = useRef(440);
   const minLeft = 320;
   let maxLeft = 820;
 
-  const onSplitDown = (e: React.MouseEvent) => {  draggingRef.current = true;
-
+  const onSplitDown = (e: React.MouseEvent) => {  
+    draggingRef.current = true;
     try { document.body.style.userSelect = "none"; document.body.style.cursor = "col-resize"; } catch {}
     setDragging(true);
     startXRef.current = e.clientX;
@@ -578,7 +665,7 @@ const draggingRef = useRef(false);
   };
   const onSplitUp = () => {
     setDragging(false);
-  draggingRef.current = false;
+    draggingRef.current = false;
     try { document.body.style.userSelect = ""; document.body.style.cursor = ""; } catch {}
     window.removeEventListener("mousemove", onSplitMove);
     window.removeEventListener("mouseup", onSplitUp);
@@ -594,25 +681,80 @@ const draggingRef = useRef(false);
   const [boardSize, setBoardSize] = useState(400);
   const boardCellRef = useRef<HTMLDivElement | null>(null);
   const [autoBoardWidth, setAutoBoardWidth] = useState(400);
-  const boardRenderWidth = Math.min(boardSize, Math.floor(autoBoardWidth));
+  const [mobileBoardSize, setMobileBoardSize] = useState(320); // Dimensione predefinita per mobile
+  
+  // Calcola la dimensione ottimale per la scacchiera in base al dispositivo
+  const calculateOptimalBoardSize = () => {
+    if (!isMobile) {
+      return Math.min(boardSize, Math.floor(autoBoardWidth));
+    }
+    
+    // Per dispositivi mobile, adatta la dimensione in base allo schermo
+    const screenWidth = window.innerWidth;
+    const screenHeight = window.innerHeight;
+    
+    // Calcola dimensione massima possibile mantenendo le proporzioni
+    const maxSize = Math.min(screenWidth - 40, screenHeight - 300);
+    
+    // Limita a dimensioni ragionevoli per mobile
+    return Math.max(280, Math.min(400, maxSize));
+  };
+  
+  const boardRenderWidth = calculateOptimalBoardSize();
 
   // ResizeObserver: adatta automaticamente la board alla larghezza utile
   useEffect(() => {
     const el = boardCellRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        const w = Math.max(0, Math.floor(entry.contentRect.width));
+    
+    const updateBoardSize = () => {
+      if (isMobile) {
+        const newSize = calculateOptimalBoardSize();
+        setMobileBoardSize(newSize);
+      } else {
+        const w = Math.max(0, Math.floor(el.clientWidth));
         setAutoBoardWidth(w || 0);
       }
-    });
+    };
+    
+    const ro = new ResizeObserver(updateBoardSize);
     ro.observe(el);
-    // init
-    const rect = el.getBoundingClientRect?.();
-    if (rect?.width) setAutoBoardWidth(Math.floor(rect.width));
-    return () => { try { ro.disconnect(); } catch {} };
+    
+    // Inizializza
+    updateBoardSize();
+    
+    // Aggiungi listener per l'orientamento del dispositivo
+    const handleOrientationChange = () => {
+      setTimeout(updateBoardSize, 300);
+    };
+    
+    window.addEventListener('resize', updateBoardSize);
+    window.addEventListener('orientationchange', handleOrientationChange);
+    
+    return () => { 
+      try { 
+        ro.disconnect(); 
+        window.removeEventListener('resize', updateBoardSize);
+        window.removeEventListener('orientationchange', handleOrientationChange);
+      } catch {} 
+    };
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handle = () => setIsMobile(detectMobile());
+    handle();
+    window.addEventListener("resize", handle);
+    window.addEventListener("orientationchange", handle);
+    return () => {
+      window.removeEventListener("resize", handle);
+      window.removeEventListener("orientationchange", handle);
+    };
   }, []);
 
+  useEffect(() => {
+    if (!isMobile) setMobileTab('moves');
+  }, [isMobile]);
 
   // training & feedback
   const [training, setTraining] = useState(false);
@@ -806,7 +948,6 @@ const draggingRef = useRef(false);
   const [engineMovePending, setEngineMovePending] = useState(false);
   const lastEngineAnalyzeFenRef = useRef<string>("");
 
-
   // Best-move overlay
   const [showBestArrow, setShowBestArrow] = useState(false); // toggle utente
   const [showBestOnce, setShowBestOnce] = useState(false);   // usato dal blunder helper
@@ -868,7 +1009,8 @@ const draggingRef = useRef(false);
       lastEngineAnalyzeFenRef.current = "";
     }
   }, [playVsEngine, engineOn]);
-// primo tratto UCI -> freccia [from,to]
+
+  // primo tratto UCI -> freccia [from,to]
   const bestArrow: [string, string] | null = useMemo(() => {
     const best = lines?.[0];
     if (!best || !best.pvUci?.length) return null;
@@ -895,7 +1037,7 @@ const draggingRef = useRef(false);
     }
   };
 
-/* ---------------- Training / DnD ---------------- */
+  /* ---------------- Training / DnD ---------------- */
   const applyDrop = (sourceSquare: string, targetSquare: string) => {
     if (sourceSquare === targetSquare) return false;
     const baseFen = fenHistory[stepRef.current];
@@ -905,7 +1047,6 @@ const draggingRef = useRef(false);
       const humanSide = engineSide === 'w' ? 'b' : 'w';
       if (chess.turn() !== humanSide) { flash(false, "È il turno del motore."); return false; }
     }
-
 
     if (training && stepRef.current < mainlinePlies.length) {
       let expected: any = null;
@@ -940,7 +1081,7 @@ const draggingRef = useRef(false);
         setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
         setStep((s) => s + 1);
         flash(true, "Giusto!");
-        // quando esegui correttamente, togli l’hint “once”
+        // quando esegui correttamente, togli l'hint "once"
         if (playVsEngine) setEngineMovePending(true);
         setShowBestOnce(false);
         return true;
@@ -955,7 +1096,7 @@ const draggingRef = useRef(false);
     const newFen = chess.fen();
     setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
     setStep((s) => s + 1);
-    // fuori dal training togli l’hint “once”
+    // fuori dal training togli l'hint "once"
     if (playVsEngine) setEngineMovePending(true);
     setShowBestOnce(false);
     return true;
@@ -988,7 +1129,6 @@ const draggingRef = useRef(false);
     setEngineMovePending(false);
     lastEngineAnalyzeFenRef.current = "";
   };
-
 
   /* ---------------- Commenti con badge + anteprima FEN ---------------- */
   function CommentTokens({ texts }: { texts?: string[] }) {
@@ -1032,7 +1172,7 @@ const draggingRef = useRef(false);
     );
   }
 
-  /* ---------------- Varianti: blocco “ad albero” (toggle per nodo) ---------------- */
+  /* ---------------- Varianti: blocco "ad albero" (toggle per nodo) ---------------- */
   function VariantBlock({ node }: { node: PlyNode }) {
     const vars = node.variations || [];
     if (!vars.length) return null;
@@ -1402,6 +1542,417 @@ const draggingRef = useRef(false);
   const topCp = lines?.[0]?.cp;
   const topMate = lines?.[0]?.mate;
 
+  if (isMobile) {
+    const fileInputId = "pgn-file-mobile";
+    const navStyle = (disabled, accent = false) => ({
+      ...styles.mNavBtn,
+      ...(accent ? styles.btnPrimary : {}),
+      ...(disabled
+        ? { opacity: 1, background: "#f3f4f6", color: "#9ca3af", borderColor: "#e5e7eb", cursor: "not-allowed" }
+        : { cursor: "pointer" }),
+    });
+    const chipStyle = (options = {}) => {
+      const { active = false, disabled = false } = options;
+      const base = { ...styles.mChip };
+      if (disabled) {
+        return {
+          ...base,
+          opacity: 0.55,
+          background: "#f3f4f6",
+          color: "#9ca3af",
+          borderColor: "#e5e7eb",
+          cursor: "not-allowed",
+        };
+      }
+      if (active) return { ...base, ...styles.btnToggleOn };
+      return base;
+    };
+
+    const movesContent = (
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={styles.mChipRow}>
+          <button
+            onClick={() => setVariantView('tree')}
+            style={chipStyle({ active: variantView === 'tree', disabled: !treeMain })}
+            disabled={!treeMain}
+          >
+            Vista ad albero
+          </button>
+          <button
+            onClick={() => setVariantView('inline')}
+            style={chipStyle({ active: variantView === 'inline', disabled: !treeMain })}
+            disabled={!treeMain}
+          >
+            Vista in linea
+          </button>
+        </div>
+        {!treeMain ? (
+          <div style={styles.mInfoText}>
+            Carica un PGN e seleziona una partita per vedere mosse, commenti e varianti.
+          </div>
+        ) : (
+          <div style={{ ...styles.flow, maxHeight: "45vh", overflowY: "auto" }}>
+            {flow}
+          </div>
+        )}
+      </div>
+    );
+
+    const engineContent = (
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={styles.mChipRow}>
+          <button
+            onClick={() => {
+              const next = !engineOn;
+              setEngineOn(next);
+              if (!next) stop();
+            }}
+            style={chipStyle({ active: engineOn })}
+            title={ready ? "Accendi/Spegni motore" : "Motore non ancora pronto"}
+          >
+            {engineOn ? "Engine: ON" : "Engine: OFF"}
+          </button>
+          <button
+            onClick={() => {
+              const next = !playVsEngine;
+              setPlayVsEngine(next);
+              setTraining(false);
+              setShowBestOnce(false);
+              if (!next) {
+                setEngineMovePending(false);
+                lastEngineAnalyzeFenRef.current = "";
+              } else {
+                lastEngineAnalyzeFenRef.current = "";
+              }
+            }}
+            style={chipStyle({ active: playVsEngine })}
+            title="Gioca contro il motore"
+          >
+            {playVsEngine ? "VS Engine: ON" : "VS Engine: OFF"}
+          </button>
+          <button
+            onClick={() => setShowBestArrow((s) => !s)}
+            style={chipStyle({ active: showBestArrow })}
+            title="Mostra/Nascondi freccia Best Move del motore"
+          >
+            {showBestArrow ? "Best move: ON" : "Best move: OFF"}
+          </button>
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
+            Depth
+            <input
+              type="number"
+              min={8}
+              max={35}
+              value={engineDepth}
+              onChange={(e) => setEngineDepth(Number(e.target.value))}
+              style={{ width: "100%", padding: 8, borderRadius: 10, border: "1px solid #d1d5db" }}
+            />
+          </label>
+          <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
+            MultiPV
+            <input
+              type="number"
+              min={1}
+              max={5}
+              value={engineMPV}
+              onChange={(e) => setEngineMPV(Number(e.target.value))}
+              style={{ width: "100%", padding: 8, borderRadius: 10, border: "1px solid #d1d5db" }}
+            />
+          </label>
+          <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
+            Colore del motore
+            <select
+              style={styles.select}
+              value={engineSide}
+              onChange={(e) => setEngineSide(e.target.value === "w" ? "w" : "b")}
+            >
+              <option value="w">Motore: Bianco</option>
+              <option value="b">Motore: Nero</option>
+            </select>
+          </label>
+        </div>
+        {engineErr && <div style={{ color: "#b91c1c", fontSize: 12 }}>{engineErr}</div>}
+        {engineOn && (
+          <div style={{ overflowX: "auto" }}>
+            <EnginePanel
+              lines={lines}
+              thinking={thinking}
+              depth={engineDepth}
+              onPlayLine={(i) => {
+                const best = lines[i];
+                if (!best) return;
+                try {
+                  const c = new Chess(liveFen);
+                  const newFens = [c.fen()];
+                  for (const san of best.pvSan) {
+                    c.move(san, { sloppy: true });
+                    newFens.push(c.fen());
+                  }
+                  setFenHistory(newFens);
+                  setStep(0);
+                  setActiveNodeId(null);
+                  setTraining(false);
+                  setShowBestOnce(false);
+                } catch {}
+              }}
+            />
+          </div>
+        )}
+      </div>
+    );
+
+    const pgnContent = (
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={styles.mInfoText}>Partite nel PGN</div>
+          <select
+            style={styles.select}
+            value={String(Math.min(gameIndex, Math.max(0, games.length - 1)))}
+            onChange={(e) => setGameIndex(Number(e.target.value))}
+          >
+            {games.length ? (
+              games.map((g, i) => (
+                <option key={i} value={String(i)} style={{ color: "#000" }}>
+                  {gameLabel(parseHeaders(g))}
+                </option>
+              ))
+            ) : (
+              <option style={{ color: "#000" }}>(nessuna partita)</option>
+            )}
+          </select>
+        </div>
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={styles.mInfoText}>Oppure incolla qui il PGN</div>
+          <textarea
+            style={styles.textarea}
+            value={rawPgn}
+            onChange={(e) => setRawPgn(e.target.value)}
+            placeholder="Incolla qui il tuo PGN..."
+          />
+          <button style={{ ...styles.mAccentButton, width: "100%" }} onClick={loadFromTextarea}>
+            Carica
+          </button>
+        </div>
+      </div>
+    );
+
+    const settingsContent = (
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={styles.mChipRow}>
+          <button
+            onClick={() => setTraining((t) => !t)}
+            style={chipStyle({ active: training })}
+          >
+            {training ? "Allenamento: ON" : "Allenamento: OFF"}
+          </button>
+          <button
+            onClick={() => setVariantView((v) => (v === "tree" ? "inline" : "tree"))}
+            style={chipStyle()}
+          >
+            {`Varianti: ${variantView === "tree" ? "albero" : "in linea"}`}
+          </button>
+        </div>
+        <div style={styles.mChipRow}>
+          <button
+            onClick={openAll}
+            disabled={!(variantView === "tree" && hasAnyVariants)}
+            style={chipStyle({ disabled: !(variantView === "tree" && hasAnyVariants) })}
+            title="Apri tutte le varianti"
+          >
+            Apri tutto
+          </button>
+          <button
+            onClick={closeAll}
+            disabled={!(variantView === "tree" && hasAnyVariants)}
+            style={chipStyle({ disabled: !(variantView === "tree" && hasAnyVariants) })}
+            title="Chiudi tutte le varianti"
+          >
+            Chiudi tutto
+          </button>
+        </div>
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={styles.mInfoText}>Scacchiera: {boardRenderWidth}px</div>
+          <input
+            type="range"
+            min={280}
+            max={400}
+            value={mobileBoardSize}
+            onChange={(e) => setMobileBoardSize(Number(e.target.value))}
+          />
+        </div>
+        <button
+          onClick={() => setWhiteOrientation((w) => !w)}
+          style={chipStyle()}
+        >
+          Ruota
+        </button>
+      </div>
+    );
+
+    const mobileTabs = [
+      { id: "moves", label: "Mosse" },
+      { id: "engine", label: "Motore" },
+      { id: "pgn", label: "PGN" },
+      { id: "settings", label: "Opzioni" },
+    ];
+    const mobilePanels = {
+      moves: movesContent,
+      engine: engineContent,
+      pgn: pgnContent,
+      settings: settingsContent,
+    };
+    const atStart = step === 0 || isAnimating;
+    const atEnd = step === Math.max(0, fenHistory.length - 1) || isAnimating;
+    const forwardDisabled = step >= fenHistory.length - 1 || isAnimating;
+
+    return (
+      <div style={styles.mApp}>
+        <div style={styles.mHeader}>
+          <div style={styles.mHeaderRow}>
+            <div>
+              <div style={styles.title}>PGN Viewer</div>
+              <div style={styles.mInfoText}>
+                Allenamento sulla linea principale + visualizzazione varianti + analisi motore.
+              </div>
+            </div>
+            <div style={styles.mHeaderActions}>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                style={styles.mFileButton}
+                title="Carica un file PGN"
+              >
+                Sfoglia
+              </button>
+              <button
+                onClick={resetGame}
+                style={styles.mAccentButton}
+                title="Nuova Partita (posizione iniziale)"
+              >
+                Nuova
+              </button>
+            </div>
+          </div>
+          <input
+            ref={fileInputRef}
+            id={fileInputId}
+            type="file"
+            accept=".pgn,.PGN,text/plain"
+            onChange={handleFileChange}
+            style={{ display: "none" }}
+          />
+        </div>
+
+        <div style={styles.mBoardWrap}>
+          <div style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 8, alignItems: "stretch" }}>
+            <div style={{ height: boardRenderWidth }}>
+              <EvalBar
+                cp={topCp}
+                mate={topMate}
+                turn={liveFen.split(" ")[1] === "w" ? "w" : "b"}
+              />
+            </div>
+            <div ref={boardCellRef} style={{ width: "100%", display: "flex", justifyContent: "center" }}>
+              <div
+                onWheel={onWheelNav}
+                style={{
+                  width: boardRenderWidth,
+                  height: boardRenderWidth,
+                  borderRadius: 16,
+                  overflow: "hidden",
+                  boxShadow: "0 6px 18px rgba(15,23,42,0.12)",
+                  background: "#fff",
+                }}
+                title="Usa la rotellina per scorrere le mosse"
+              >
+                <Chessboard
+                  options={{
+                    id: "main-board",
+                    position: liveFen,
+                    onPieceDrop,
+                    boardWidth: boardRenderWidth,
+                    animationDuration: 200,
+                    squareStyles: customSquareStyles,
+                    arrows: (boardArrows || []).map(([from, to]) => ({
+                      startSquare: from,
+                      endSquare: to,
+                      color: "rgb(0, 128, 0)",
+                    })),
+                    boardOrientation: whiteOrientation ? "white" : "black",
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+          <div style={styles.mNavRow}>
+            <button
+              onClick={goStart}
+              disabled={atStart}
+              style={navStyle(atStart)}
+              title="Inizio"
+            >
+              Inizio
+            </button>
+            <button
+              onClick={goPrev}
+              disabled={atStart}
+              style={navStyle(atStart)}
+              title="Indietro"
+            >
+              Indietro
+            </button>
+            <button
+              onClick={goNext}
+              disabled={forwardDisabled}
+              style={navStyle(forwardDisabled, true)}
+              title="Avanti"
+            >
+              Avanti
+            </button>
+            <button
+              onClick={goEnd}
+              disabled={atEnd}
+              style={navStyle(atEnd)}
+              title="Fine"
+            >
+              Fine
+            </button>
+          </div>
+          <div style={styles.mInfoText}>
+            Posizione {step}/{Math.max(0, fenHistory.length - 1)}
+            {isAnimating ? " — animazione..." : ""}
+            {engineOn ? (thinking ? " — engine..." : "") : ""}
+          </div>
+          {feedback && (
+            <div style={{ fontSize: 13, ...(feedback.ok ? styles.feedbackGood : styles.feedbackBad) }}>
+              {feedback.text}
+            </div>
+          )}
+        </div>
+
+        <div style={styles.mTabsRow}>
+          {mobileTabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setMobileTab(tab.id)}
+              style={{
+                ...styles.mTabBtn,
+                ...(mobileTab === tab.id ? styles.mTabBtnActive : {}),
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={styles.mTabPanel}>
+          {mobilePanels[mobileTab]}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.app}>
       <div style={styles.container}>
@@ -1421,7 +1972,6 @@ const draggingRef = useRef(false);
             >
               🆕 Nuova Partita
             </button>
-
 
             {/* Navigazione */}
             <button
@@ -1516,75 +2066,72 @@ const draggingRef = useRef(false);
             </button>
 
             <div style={styles.engineRow}>
-            {/* Engine controls */}
-            <button
-              onClick={() => {
-                const next = !engineOn;
-                setEngineOn(next);
-                if (!next) stop();
-              }}
-              style={{ ...styles.btn, ...(engineOn ? styles.btnToggleOn : styles.btnToggleOff) }}
-              title={ready ? "Accendi/Spegni motore" : "Motore non ancora pronto"}
-            >
-              {engineOn ? "Engine: ON" : "Engine: OFF"}
-            </button>
+              {/* Engine controls */}
+              <button
+                onClick={() => {
+                  const next = !engineOn;
+                  setEngineOn(next);
+                  if (!next) stop();
+                }}
+                style={{ ...styles.btn, ...(engineOn ? styles.btnToggleOn : styles.btnToggleOff) }}
+                title={ready ? "Accendi/Spegni motore" : "Motore non ancora pronto"}
+              >
+                {engineOn ? "Engine: ON" : "Engine: OFF"}
+              </button>
 
-            <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              Depth
-              <input
-                type="number"
-                min={8}
-                max={35}
-                value={engineDepth}
-                onChange={(e) => setEngineDepth(Number(e.target.value))}
-                style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
-              />
-            </label>
+              <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                Depth
+                <input
+                  type="number"
+                  min={8}
+                  max={35}
+                  value={engineDepth}
+                  onChange={(e) => setEngineDepth(Number(e.target.value))}
+                  style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
+                />
+              </label>
 
-            <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              MultiPV
-              <input
-                type="number"
-                min={1}
-                max={5}
-                value={engineMPV}
-                onChange={(e) => setEngineMPV(Number(e.target.value))}
-                style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
-              />
+              <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                MultiPV
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={engineMPV}
+                  onChange={(e) => setEngineMPV(Number(e.target.value))}
+                  style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
+                />
+              </label>
 
-            {/* VS Engine controls */}
-            <button
-              onClick={() => {
-                const next = !playVsEngine;
-                setPlayVsEngine(next);
-                setTraining(false);
-                setShowBestOnce(false);
-                if (!next) {
-                  setEngineMovePending(false);
-                  lastEngineAnalyzeFenRef.current = "";
-                } else {
-                  lastEngineAnalyzeFenRef.current = "";
-                }
-              }}
-              style={{ ...styles.btn, ...(playVsEngine ? styles.btnToggleOn : styles.btnToggleOff) }}
-              title="Gioca contro il motore"
-            >
-              VS Engine: {playVsEngine ? "ON" : "OFF"}
-            </button>
+              {/* VS Engine controls */}
+              <button
+                onClick={() => {
+                  const next = !playVsEngine;
+                  setPlayVsEngine(next);
+                  setTraining(false);
+                  setShowBestOnce(false);
+                  if (!next) {
+                    setEngineMovePending(false);
+                    lastEngineAnalyzeFenRef.current = "";
+                  } else {
+                    lastEngineAnalyzeFenRef.current = "";
+                  }
+                }}
+                style={{ ...styles.btn, ...(playVsEngine ? styles.btnToggleOn : styles.btnToggleOff) }}
+                title="Gioca contro il motore"
+              >
+                VS Engine: {playVsEngine ? "ON" : "OFF"}
+              </button>
 
-            <select
-              style={styles.select}
-              value={engineSide}
-              onChange={(e) => setEngineSide(((e.target.value === "w" ? "w" : "b") as 'w'|'b'))}
-              title="Colore del motore"
-            >
-              <option value="w">Motore: Bianco</option>
-              <option value="b">Motore: Nero</option>
-            </select>
-
-            </label>
-
-            
+              <select
+                style={styles.select}
+                value={engineSide}
+                onChange={(e) => setEngineSide(((e.target.value === "w" ? "w" : "b") as 'w'|'b'))}
+                title="Colore del motore"
+              >
+                <option value="w">Motore: Bianco</option>
+                <option value="b">Motore: Nero</option>
+              </select>
             </div>
 
             {/* Best move overlay toggle */}
@@ -1649,27 +2196,26 @@ const draggingRef = useRef(false);
               {/* Scacchiera */}
               <div ref={boardCellRef} style={{ width: "100%" }}>
                 <div
-                onWheel={onWheelNav}
-                style={{ width: boardRenderWidth, height: boardRenderWidth,  borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
-                title="Usa la rotellina per scorrere le mosse"
-              >
-                <Chessboard
-                  options={{
-                    id: 'main-board',
-                    position: liveFen,
-                    onPieceDrop, // firma v5: ({ sourceSquare, targetSquare }) => boolean
-                    boardWidth: boardRenderWidth,
-                    animationDuration: 200,
-                    squareStyles: customSquareStyles, // ex customSquareStyles
-                    arrows: (boardArrows || []).map(([from, to]: any) => ({
-                      startSquare: from,
-                      endSquare: to,
-                      color: 'rgb(0, 128, 0)',
-                    })), // ex customArrows
-                    boardOrientation: whiteOrientation ? 'white' : 'black',
-                  }}
-                />
-
+                  onWheel={onWheelNav}
+                  style={{ width: boardRenderWidth, height: boardRenderWidth, borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
+                  title="Usa la rotellina per scorrere le mosse"
+                >
+                  <Chessboard
+                    options={{
+                      id: 'main-board',
+                      position: liveFen,
+                      onPieceDrop, // firma v5: ({ sourceSquare, targetSquare }) => boolean
+                      boardWidth: boardRenderWidth,
+                      animationDuration: 200,
+                      squareStyles: customSquareStyles, // ex customSquareStyles
+                      arrows: (boardArrows || []).map(([from, to]: any) => ({
+                        startSquare: from,
+                        endSquare: to,
+                        color: 'rgb(0, 128, 0)',
+                      })), // ex customArrows
+                      boardOrientation: whiteOrientation ? 'white' : 'black',
+                    }}
+                  />
                 </div>
               </div>
             </div>
@@ -1737,7 +2283,7 @@ const draggingRef = useRef(false);
         </div>
 
         <div style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
-          Suggerimento: passa sopra <span style={styles.fenBadge}>Diagramma</span> per l’anteprima.
+          Suggerimento: passa sopra <span style={styles.fenBadge}>Diagramma</span> per l'anteprima.
           Le card in alto e il pannello mosse sono ridimensionabili. Trascina lo splitter per variare la larghezza.
         </div>
       </div>
@@ -1770,7 +2316,6 @@ const draggingRef = useRef(false);
               squareStyles: {},
             }}
           />
-
         </div>
       )}
     </div>
