@@ -1,4 +1,4 @@
-// @ts-nocheck
+﻿// @ts-nocheck
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
@@ -25,7 +25,7 @@ function detectMobile() {
 }
 
 /* =====================================================
-   PGN utilities — robust tokenizer + game-tree parser
+   PGN utilities â€” robust tokenizer + game-tree parser
    (== invariati dal tuo file, salvo piccole aggiunte in fondo)
    ===================================================== */
 
@@ -43,7 +43,7 @@ function parseHeaders(pgn: string) {
   return headers;
 }
 
-/** Compatibilità con marcatori esterni + pulizia detriti engine */
+/** CompatibilitÃ  con marcatori esterni + pulizia detriti engine */
 function preprocessExternalMarkers(pgnText: string) {
   let t = pgnText.replace(/\r\n?/g, "\n");
   t = t.replace(/@@StartBracket@@([\s\S]*?)@@EndBracket@@/g, (_, inside) => {
@@ -111,14 +111,14 @@ const TT = {
 /** Tokenizer compliant with PGN movetext. */
 function tokenizeMovetext(raw: string) {
   const s = stripSemicolonComments(raw);
-  const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.|…)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
+  const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.|â€¦)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
   const tokens: Array<{ t: string; v: string }> = [];
   let m;
   while ((m = rx.exec(s))) {
     const tok = m[0];
     if (tok[0] === "{") tokens.push({ t: TT.COMMENT, v: tok.slice(1, -1).trim() });
     else if (tok[0] === "$") tokens.push({ t: TT.NAG, v: tok });
-    else if (/^\d+\.(?:\.\.|…)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
+    else if (/^\d+\.(?:\.\.|â€¦)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
     else if (tok === "(") tokens.push({ t: TT.RAV_START, v: tok });
     else if (tok === ")") tokens.push({ t: TT.RAV_END, v: tok });
     else if (/^(1-0|0-1|1\/2-1\/2|\*)$/.test(tok)) tokens.push({ t: TT.RESULT, v: tok });
@@ -206,7 +206,7 @@ function parseMovetextToTree(moveText: string, startFen?: string): { main: Line;
         while (j < tokens.length && (tokens[j].t === TT.COMMENT || tokens[j].t === TT.NAG)) j++;
 
         if (j < tokens.length && tokens[j].t === TT.MOVE_NUM && lastNode) {
-          const wantsBlack = /…|\.\.\.$/.test(tokens[j].v);
+          const wantsBlack = /â€¦|\.\.\.$/.test(tokens[j].v);
           const desired: "w" | "b" = wantsBlack ? "b" : "w";
           const current = sideFromFen(anchorFen);
           if (current !== desired) {
@@ -891,6 +891,19 @@ export default function App() {
   const goPrev = () => animateToStep(stepRef.current - 1);
   const goNext = () => animateToStep(stepRef.current + 1);
 
+  const goPrevGame = () => {
+    if (gameIndex <= 0) return;
+    setGameIndex((idx) => Math.max(0, idx - 1));
+  };
+
+  const goNextGame = () => {
+    if (gameIndex >= Math.max(0, games.length - 1)) return;
+    setGameIndex((idx) => Math.min(Math.max(0, games.length - 1), idx + 1));
+  };
+
+  const canPrevGame = gameIndex > 0;
+  const canNextGame = gameIndex < Math.max(0, games.length - 1);
+
   // evidenzia ultimi from/to
   const lastFromTo = useMemo(() => {
     try {
@@ -998,7 +1011,7 @@ export default function App() {
   }, [engineOn, ready, liveFen, engineDepth, engineMPV]);
 
   
-  // === VS Engine: trigger analisi solo quando è il turno del motore e serve ===
+  // === VS Engine: trigger analisi solo quando Ã¨ il turno del motore e serve ===
   useEffect(() => {
     if (!playVsEngine || !engineOn || !ready) return;
     try {
@@ -1013,7 +1026,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playVsEngine, engineOn, ready, liveFen, engineSide, engineDepth, analyze, thinking, engineMovePending]);
 
-  // === VS Engine: quando l'analisi è pronta, gioca una sola mossa (pvSan[0]) ===
+  // === VS Engine: quando l'analisi Ã¨ pronta, gioca una sola mossa (pvSan[0]) ===
   useEffect(() => {
     if (!playVsEngine || !engineOn || !ready) return;
     if (!engineMovePending) return;
@@ -1064,7 +1077,7 @@ export default function App() {
   const statusExtras: string[] = [];
   if (isAnimating) statusExtras.push("animazione...");
   if (engineOn && thinking) statusExtras.push("engine...");
-  const statusLine = `Posizione ${step}/${Math.max(0, fenHistory.length - 1)}${statusExtras.length ? " — " + statusExtras.join(" — ") : ""}`;
+  const statusLine = `Posizione ${step}/${Math.max(0, fenHistory.length - 1)}${statusExtras.length ? " â€” " + statusExtras.join(" â€” ") : ""}`;
   // === Click and Move functionality ===
   const [moveFrom, setMoveFrom] = useState('');
   const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
@@ -1097,8 +1110,8 @@ export default function App() {
           textShadow: "0 2px 6px rgba(0,0,0,0.45)",
         }}
       >
-        {checkmatedColor === "w" ? "♔" : "♚"}
-        <span style={{ fontSize: squareWidth * 0.45, marginLeft: 2 }}>☠</span>
+        {checkmatedColor === "w" ? "â™”" : "â™š"}
+        <span style={{ fontSize: squareWidth * 0.45, marginLeft: 2 }}>â˜ </span>
       </div>
     );
     return { [pieceId]: MateKing };
@@ -1178,7 +1191,7 @@ export default function App() {
       return;
     }
 
-    // Se abbiamo già selezionato un pezzo e clicchiamo su una casella di destinazione
+    // Se abbiamo giÃ  selezionato un pezzo e clicchiamo su una casella di destinazione
     // square clicked to move to, check if valid move
     const moves = chessGameRef.current.moves({
       square: moveFrom,
@@ -1241,7 +1254,7 @@ export default function App() {
     // VS Engine: consenti solo mosse umane nel loro turno
     if (playVsEngine) {
       const humanSide = engineSide === 'w' ? 'b' : 'w';
-      if (chess.turn() !== humanSide) { flash(false, "È il turno del motore."); return false; }
+      if (chess.turn() !== humanSide) { flash(false, "Ãˆ il turno del motore."); return false; }
     }
 
     if (training && stepRef.current < mainlinePlies.length) {
@@ -1263,7 +1276,7 @@ export default function App() {
 
         if (!isSame) {
           flash(false, "Mossa sbagliata, riprova.");
-          // Blunder helper: se il motore è acceso e abbiamo la best line, mostra freccia per pochi secondi
+          // Blunder helper: se il motore Ã¨ acceso e abbiamo la best line, mostra freccia per pochi secondi
           if (engineOn) {
             if (!thinking) analyze(baseFen, { depth: engineDepth, multipv: Math.max(1, engineMPV) });
             setShowBestOnce(true);
@@ -1330,7 +1343,7 @@ export default function App() {
   const gameLabel = (hdrs: Record<string, string>) => {
     const white = hdrs.White || "Bianco";
     const black = hdrs.Black || "Nero";
-    const event = hdrs.Event ? ` — ${hdrs.Event}` : "";
+    const event = hdrs.Event ? ` â€” ${hdrs.Event}` : "";
     const result = hdrs.Result ? ` (${hdrs.Result})` : "";
     return `${white} vs ${black}${event}${result}`;
   };
@@ -1366,7 +1379,7 @@ export default function App() {
               <span
                 key={`fen-${i}`}
                 style={styles.fenBadge}
-                title="Anteprima diagramma — clic per aprire"
+                title="Anteprima diagramma â€” clic per aprire"
                 onClick={() => {
                   try {
                     const c = new Chess(fen);
@@ -1439,7 +1452,7 @@ export default function App() {
       const num = n.isWhite ? `${n.moveNumber}.` : `${n.moveNumber}...`;
       parts.push(i === 0 ? `${num} ${n.san}` : n.san);
     }
-    if (line.nodes.length > maxPlies) parts.push("…");
+    if (line.nodes.length > maxPlies) parts.push("â€¦");
     return parts.join(" ");
   }
 
@@ -1799,23 +1812,55 @@ export default function App() {
       return base;
     };
 
+    const atStart = step === 0 || isAnimating;
+    const atEnd = step === Math.max(0, fenHistory.length - 1) || isAnimating;
+    const forwardDisabled = step >= fenHistory.length - 1 || isAnimating;
+
     const movesContent = (
       <div style={{ display: "grid", gap: 12 }}>
-        <div style={styles.mChipRow}>
-          <button
-            onClick={() => setVariantView('tree')}
-            style={chipStyle({ active: variantView === 'tree', disabled: !treeMain })}
-            disabled={!treeMain}
-          >
-            Vista ad albero
-          </button>
-          <button
-            onClick={() => setVariantView('inline')}
-            style={chipStyle({ active: variantView === 'inline', disabled: !treeMain })}
-            disabled={!treeMain}
-          >
-            Vista in linea
-          </button>
+        <div
+          style={{
+            ...styles.mChipRow,
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={() => setVariantView('tree')}
+              style={chipStyle({ active: variantView === 'tree', disabled: !treeMain })}
+              disabled={!treeMain}
+            >
+              Vista ad albero
+            </button>
+            <button
+              onClick={() => setVariantView('inline')}
+              style={chipStyle({ active: variantView === 'inline', disabled: !treeMain })}
+              disabled={!treeMain}
+            >
+              Vista in linea
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={goPrevGame}
+              disabled={!canPrevGame}
+              style={chipStyle({ disabled: !canPrevGame })}
+              title="Partita precedente"
+              aria-label="Partita precedente"
+            >
+              {"\u2039"}
+            </button>
+            <button
+              onClick={goNextGame}
+              disabled={!canNextGame}
+              style={chipStyle({ disabled: !canNextGame })}
+              title="Partita successiva"
+              aria-label="Partita successiva"
+            >
+              {"\u203A"}
+            </button>
+          </div>
         </div>
         {!treeMain ? (
           <div style={styles.mInfoText}>
@@ -1942,21 +1987,54 @@ export default function App() {
       <div style={{ display: "grid", gap: 12 }}>
         <div style={{ display: "grid", gap: 6 }}>
           <div style={styles.mInfoText}>Partite nel PGN</div>
-          <select
-            style={styles.select}
-            value={String(Math.min(gameIndex, Math.max(0, games.length - 1)))}
-            onChange={(e) => setGameIndex(Number(e.target.value))}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+              alignItems: "center",
+              width: "100%",
+            }}
           >
-            {games.length ? (
-              games.map((g, i) => (
-                <option key={i} value={String(i)} style={{ color: "#000" }}>
-                  {gameLabel(parseHeaders(g))}
-                </option>
-              ))
-            ) : (
-              <option style={{ color: "#000" }}>(nessuna partita)</option>
-            )}
-          </select>
+            <button
+              onClick={goPrevGame}
+              disabled={!canPrevGame}
+              style={{ ...btnStyle(!canPrevGame, { padding: '4px 8px', fontSize: 12 }), flexShrink: 0 }}
+              title="Partita precedente"
+              aria-label="Partita precedente"
+            >
+              {"\u2039"}
+            </button>
+            <select
+              style={{ ...styles.select, flex: "1 1 160px", minWidth: 0 }}
+              value={String(Math.min(gameIndex, Math.max(0, games.length - 1)))}
+              onChange={(e) => setGameIndex(Number(e.target.value))}
+            >
+              {games.length ? (
+                games.map((g, i) => (
+                  <option key={i} value={String(i)} style={{ color: "#000" }}>
+                    {gameLabel(parseHeaders(g))}
+                  </option>
+                ))
+              ) : (
+                <option style={{ color: "#000" }}>(nessuna partita)</option>
+              )}
+            </select>
+            <button
+              onClick={goNextGame}
+              disabled={!canNextGame}
+              style={{ ...btnStyle(!canNextGame, { padding: '4px 8px', fontSize: 12 }), flexShrink: 0 }}
+              title="Partita successiva"
+              aria-label="Partita successiva"
+            >
+              {"\u203A"}
+            </button>
+          </div>
+          {games.length ? (
+            <div style={{ fontSize: 12, color: "#6b7280", wordBreak: "break-word" }}>
+              Partita {gameIndex + 1} di {games.length}
+            </div>
+          ) : null}
         </div>
         <div style={{ display: "grid", gap: 6 }}>
           <div style={styles.mInfoText}>Oppure incolla qui il PGN</div>
@@ -2038,10 +2116,6 @@ export default function App() {
       pgn: pgnContent,
       settings: settingsContent,
     };
-    const atStart = step === 0 || isAnimating;
-    const atEnd = step === Math.max(0, fenHistory.length - 1) || isAnimating;
-    const forwardDisabled = step >= fenHistory.length - 1 || isAnimating;
-
     return (
       <div style={styles.mApp}>
         <div style={styles.mHeader}>
@@ -2128,32 +2202,36 @@ export default function App() {
               disabled={atStart}
               style={navStyle(atStart)}
               title="Inizio"
+              aria-label="Vai all'inizio"
             >
-              Inizio
+              {"\u00AB"} Inizio
             </button>
             <button
               onClick={goPrev}
               disabled={atStart}
               style={navStyle(atStart)}
               title="Indietro"
+              aria-label="Mossa precedente"
             >
-              Indietro
+              {"\u2039"} Indietro
             </button>
             <button
               onClick={goNext}
               disabled={forwardDisabled}
               style={navStyle(forwardDisabled, true)}
               title="Avanti"
+              aria-label="Mossa successiva"
             >
-              Avanti
+              Avanti {"\u203A"}
             </button>
             <button
               onClick={goEnd}
               disabled={atEnd}
               style={navStyle(atEnd)}
               title="Fine"
+              aria-label="Vai alla fine"
             >
-              Fine
+              Fine {"\u00BB"}
             </button>
           </div>
           <div style={styles.mInfoText}>{statusLine}</div>
@@ -2208,48 +2286,50 @@ export default function App() {
               style={btnStyle(false)}
               title="Nuova Partita (posizione iniziale)"
             >
-              🆕 Nuova Partita
+              Nuova Partita
             </button>
 
             {/* Navigazione */}
-            <button
+                        <button
               style={btnStyle(step === 0 || isAnimating)}
               onClick={goStart}
               disabled={step === 0 || isAnimating}
               title="Inizio"
+              aria-label="Vai all'inizio"
             >
-              ⏮ Inizio
+              {"\u00AB"} Inizio
             </button>
             <button
               style={btnStyle(!(step > 0 && !isAnimating))}
               onClick={goPrev}
               disabled={!(step > 0 && !isAnimating)}
               title="Indietro"
+              aria-label="Mossa precedente"
             >
-              ◀︎ Indietro
+              {"\u2039"} Indietro
             </button>
             <button
               style={{ ...btnStyle(!(step < fenHistory.length - 1 && !isAnimating)), ...styles.btnPrimary }}
               onClick={goNext}
               disabled={!(step < fenHistory.length - 1 && !isAnimating)}
               title="Avanti"
+              aria-label="Mossa successiva"
             >
-              Avanti ▶︎
+              Avanti {"\u203A"}
             </button>
             <button
               style={btnStyle(isAnimating || step === Math.max(0, fenHistory.length - 1))}
               onClick={goEnd}
               disabled={isAnimating || step === Math.max(0, fenHistory.length - 1)}
               title="Fine"
+              aria-label="Vai alla fine"
             >
-              Fine ⏭
+              Fine {"\u00BB"}
             </button>
-
-            {/* Training toggle */}
             <button
               onClick={() => setTraining((t) => !t)}
               style={{ ...styles.btn, ...(training ? styles.btnToggleOn : styles.btnToggleOff) }}
-              title="Attiva/Disattiva modalità allenamento (solo linea principale)"
+              title="Attiva/Disattiva modalitÃ  allenamento (solo linea principale)"
             >
               {training ? "Allenamento: ON" : "Allenamento: OFF"}
             </button>
@@ -2258,7 +2338,7 @@ export default function App() {
             <button
               onClick={() => setVariantView(v => v === 'tree' ? 'inline' : 'tree')}
               style={styles.btn}
-              title="Cambia modalità di visualizzazione delle varianti"
+              title="Cambia modalitÃ  di visualizzazione delle varianti"
             >
               Varianti: {variantView === 'tree' ? 'albero' : 'in linea'}
             </button>
@@ -2300,7 +2380,7 @@ export default function App() {
               style={styles.btn}
               title="Ruota la scacchiera"
             >
-              ↻ Ruota
+              {"\u21BB"} Ruota
             </button>
 
             <div style={styles.engineRow}>
@@ -2386,22 +2466,48 @@ export default function App() {
         <div style={styles.sectionGrid}>
           <div style={styles.card}>
             <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>Partite nel PGN</div>
-            <select
-              style={styles.select}
-              value={String(Math.min(gameIndex, Math.max(0, games.length - 1)))}
-              onChange={(e) => setGameIndex(Number(e.target.value))}
-            >
-              {games.length ? (
-                games.map((g, i) => (
-                  <option key={i} value={String(i)} style={{ color: "#000" }}>
-                    {gameLabel(parseHeaders(g))}
-                  </option>
-                ))
-              ) : (
-                <option style={{ color: "#000" }}>(nessuna partita)</option>
-              )}
-            </select>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                onClick={goPrevGame}
+                disabled={!canPrevGame}
+                style={btnStyle(!canPrevGame, { padding: '4px 8px', fontSize: 12 })}
+                title="Partita precedente"
+                aria-label="Partita precedente"
+              >
+                {"\u2039"}
+              </button>
+              <select
+                style={{ ...styles.select, flex: 1 }}
+                value={String(Math.min(gameIndex, Math.max(0, games.length - 1)))}
+                onChange={(e) => setGameIndex(Number(e.target.value))}
+              >
+                {games.length ? (
+                  games.map((g, i) => (
+                    <option key={i} value={String(i)} style={{ color: "#000" }}>
+                      {gameLabel(parseHeaders(g))}
+                    </option>
+                  ))
+                ) : (
+                  <option style={{ color: "#000" }}>(nessuna partita)</option>
+                )}
+              </select>
+              <button
+                onClick={goNextGame}
+                disabled={!canNextGame}
+                style={btnStyle(!canNextGame, { padding: '4px 8px', fontSize: 12 })}
+                title="Partita successiva"
+                aria-label="Partita successiva"
+              >
+                {"\u203A"}
+              </button>
+            </div>
+            {games.length ? (
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+                Partita {gameIndex + 1} di {games.length}
+              </div>
+            ) : null}
           </div>
+
 
           <div style={styles.card}>
             <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>Oppure incolla qui il PGN</div>
@@ -2422,7 +2528,7 @@ export default function App() {
           <div style={{ ...styles.left, flex: `0 0 ${leftWidth}px` }}>
             {/* Board + EvalBar */}
             <div style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 8 }}>
-              {/* Eval Bar (vantaggio White; per Nero è complementare) */}
+              {/* Eval Bar (vantaggio White; per Nero Ã¨ complementare) */}
               <div style={{ height: boardRenderWidth }}>
                 <EvalBar
                   cp={topCp}
@@ -2568,5 +2674,7 @@ export default function App() {
     </div>
   );
 }
+
+
 
 
