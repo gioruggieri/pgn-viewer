@@ -751,6 +751,14 @@ export default function App() {
       window.removeEventListener("orientationchange", handle);
     };
   }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      setSpeechAvailable(true);
+    } else {
+      setSpeechAvailable(false);
+    }
+  }, []);
+
 
   useEffect(() => {
     if (!isMobile) setMobileTab('moves');
@@ -767,11 +775,18 @@ export default function App() {
   const [isAnimating, setIsAnimating] = useState(false);
   const animTimerRef = useRef<any>(null);
   const stepRef = useRef(step);
+  const lastSpokenKeyRef = useRef<string | null>(null);
   useEffect(() => { stepRef.current = step; }, [step]);
 
   // pannello mosse
   const movesPaneRef = useRef<HTMLDivElement | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<number | null>(null);
+  useEffect(() => {
+    if (activeNodeId !== null) {
+      setActiveNodeId(null);
+    }
+  }, [step, fenHistory]);
+
 
   // Tooltip mini-board
   const [preview, setPreview] = useState<{ fen: string | null; x: number; y: number; visible: boolean }>({
@@ -1000,6 +1015,10 @@ export default function App() {
   const [showBestOnce, setShowBestOnce] = useState(false);   // usato dal blunder helper
   const showBestArrowEffective = showBestArrow || showBestOnce;
 
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [speechAvailable, setSpeechAvailable] = useState(false);
+
+
   // Rotazione scacchiera
   const [whiteOrientation, setWhiteOrientation] = useState(true);
 
@@ -1077,7 +1096,62 @@ export default function App() {
   const statusExtras: string[] = [];
   if (isAnimating) statusExtras.push("animazione...");
   if (engineOn && thinking) statusExtras.push("engine...");
-  const statusLine = `Posizione ${step}/${Math.max(0, fenHistory.length - 1)}${statusExtras.length ? " â€” " + statusExtras.join(" â€” ") : ""}`;
+  const statusLine = `Posizione ${step}/${Math.max(0, fenHistory.length - 1)}${statusExtras.length ? " — " + statusExtras.join(" — ") : ""}`;
+
+  const fenCommentMap = useMemo(() => {
+    const map = new Map<string, string>();
+
+    const visitLine = (line?: Line) => {
+      if (!line) return;
+      (line.preVariations || []).forEach(visitLine);
+      line.nodes.forEach((node) => {
+        const parts: string[] = [];
+        if (node.commentBefore?.length) parts.push(...node.commentBefore);
+        if (node.commentAfter?.length) parts.push(...node.commentAfter);
+        if (parts.length) {
+          const combined = parts.join(" ").replace(/\s+/g, " ").trim();
+          if (combined) map.set(node.fenAfter, combined);
+        }
+        (node.variations || []).forEach(visitLine);
+      });
+    };
+
+    visitLine(treeMain);
+    return map;
+  }, [treeMain]);
+
+  useEffect(() => {
+    if (!speechAvailable || !ttsEnabled) {
+      if (speechAvailable && typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      return;
+    }
+    if (typeof window === "undefined") return;
+    const currentFen = fenHistory[step];
+    if (!currentFen) return;
+    const comment = fenCommentMap.get(currentFen);
+    if (!comment) return;
+    const key = `${currentFen}#${step}`;
+    if (lastSpokenKeyRef.current === key) return;
+    lastSpokenKeyRef.current = key;
+    const utterance = new SpeechSynthesisUtterance(comment);
+    try {
+      const lang = typeof navigator !== "undefined" && navigator.language ? navigator.language : "en-US";
+      utterance.lang = lang;
+    } catch {}
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [speechAvailable, ttsEnabled, step, fenHistory, fenCommentMap]);
+
+  useEffect(() => {
+    lastSpokenKeyRef.current = null;
+    if (!ttsEnabled && speechAvailable && typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+  }, [ttsEnabled, speechAvailable, fenCommentMap]);
+
+
   // === Click and Move functionality ===
   const [moveFrom, setMoveFrom] = useState('');
   const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
@@ -1425,7 +1499,7 @@ export default function App() {
     return (
       <div style={styles.variantBlock}>
         <div style={styles.variantHeader} onClick={toggle}>
-          <span>{open ? "?" : "?"}</span>
+          <span>{open ? "v" : ">"}</span>
           <span>Varianti</span>
           <span style={styles.variantCount}>({vars.length})</span>
         </div>
@@ -1472,7 +1546,7 @@ export default function App() {
     return (
       <div style={variationIndent(depth)}>
         <div style={styles.variantLineHeader} onClick={toggle}>
-          <span>{open ? "?" : "?"}</span>
+          <span>{open ? "v" : ">"}</span>
           <span style={styles.variantBullet}>{label}</span>
           <span style={styles.variantPreview}>{linePreview(line)}</span>
         </div>
@@ -2066,6 +2140,13 @@ export default function App() {
           >
             {`Varianti: ${variantView === "tree" ? "albero" : "in linea"}`}
           </button>
+          <button
+            onClick={() => setTtsEnabled((v) => !v)}
+            style={chipStyle({ active: ttsEnabled, disabled: !speechAvailable })}
+            disabled={!speechAvailable}
+          >
+            TTS: {ttsEnabled ? "ON" : "OFF"}
+          </button>
         </div>
         <div style={styles.mChipRow}>
           <button
@@ -2333,6 +2414,18 @@ export default function App() {
             >
               {training ? "Allenamento: ON" : "Allenamento: OFF"}
             </button>
+            <button
+              onClick={() => setTtsEnabled((v) => !v)}
+              style={{
+                ...styles.btn,
+                ...(speechAvailable ? (ttsEnabled ? styles.btnToggleOn : styles.btnToggleOff) : styles.btnDisabled),
+              }}
+              disabled={!speechAvailable}
+              title={speechAvailable ? "Leggi i commenti tramite sintesi vocale" : "Sintesi vocale non supportata"}
+            >
+              TTS: {ttsEnabled ? "ON" : "OFF"}
+            </button>
+
 
             {/* Varianti view */}
             <button
