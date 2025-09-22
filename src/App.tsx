@@ -2,7 +2,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
-
 // === Nuovi import (file separati) ===
 import { useStockfish } from "./useStockfish";
 import { EvalBar } from "./EvalBar";
@@ -628,6 +627,7 @@ export default function App() {
 
   const [treeMain, setTreeMain] = useState<Line | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [fileLabel, setFileLabel] = useState<string>("");
   const [mainlinePlies, setMainlinePlies] = useState<PlyNode[]>([]);
 
   const [fenHistory, setFenHistory] = useState<string[]>([new Chess().fen()]);
@@ -829,7 +829,7 @@ export default function App() {
   };
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
-    if (f) onFile(f);
+    if (f) { onFile(f); try { setFileLabel(f.name || ""); } catch {} }
     e.currentTarget.value = "";
   };
   const loadFromTextarea = () => {
@@ -1017,6 +1017,33 @@ export default function App() {
 
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [speechAvailable, setSpeechAvailable] = useState(false);
+  const [language, setLanguage] = useState<"it" | "en">("it");
+  // Persist & restore UI language
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pgnviewer.language");
+      if (saved === "it" || saved === "en") setLanguage(saved as "it" | "en");
+      else if (typeof navigator !== "undefined") {
+        const nav = (navigator.language || "").toLowerCase();
+        if (nav.startsWith("it")) setLanguage("it");
+        else setLanguage("en");
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem("pgnviewer.language", language); } catch {}
+  }, [language]);
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = language;
+    }
+  }, [language]);
+  const isEnglish = language === "en";
+  const t = (it: string, en: string) => (isEnglish ? en : it);
+
+
 
 
   // Rotazione scacchiera
@@ -1793,7 +1820,7 @@ export default function App() {
     else if (e.deltaY < 0) animateToStep(stepRef.current - 1);
   };
 
-  /* ---------------- Helpers Apri/Chiudi tutto ---------------- */
+  /* ---------------- Helpers Apri/{t("Chiudi tutto", "Close all")} ---------------- */
   const hasAnyVariants = useMemo(() => {
     function check(line?: Line | null): boolean {
       if (!line) return false;
@@ -1938,7 +1965,7 @@ export default function App() {
         </div>
         {!treeMain ? (
           <div style={styles.mInfoText}>
-            Carica un PGN e seleziona una partita per vedere mosse, commenti e varianti.
+            {t("Carica un PGN e seleziona una partita per vedere mosse, commenti e varianti.", "Load a PGN and pick a game to see moves, comments, and variations.")}
           </div>
         ) : (
           <div style={{ ...styles.flow, maxHeight: "45vh", overflowY: "auto" }}>
@@ -1958,7 +1985,7 @@ export default function App() {
               if (!next) stop();
             }}
             style={chipStyle({ active: engineOn })}
-            title={ready ? "Accendi/Spegni motore" : "Motore non ancora pronto"}
+            title={ready ? t("Accendi/Spegni motore", "Turn engine on/off") : t("Motore non ancora pronto", "Engine not ready yet")}
           >
             {engineOn ? "Engine: ON" : "Engine: OFF"}
           </button>
@@ -1976,14 +2003,14 @@ export default function App() {
               }
             }}
             style={chipStyle({ active: playVsEngine })}
-            title="Gioca contro il motore"
+            title={t("Gioca contro il motore", "Play against the engine")}
           >
             {playVsEngine ? "VS Engine: ON" : "VS Engine: OFF"}
           </button>
           <button
             onClick={() => setShowBestArrow((s) => !s)}
             style={chipStyle({ active: showBestArrow })}
-            title="Mostra/Nascondi freccia Best Move del motore"
+            title={t("Mostra/Nascondi freccia Best Move del motore", "Show/Hide engine best move arrow")}
           >
             {showBestArrow ? "Best move: ON" : "Best move: OFF"}
           </button>
@@ -2018,8 +2045,8 @@ export default function App() {
               value={engineSide}
               onChange={(e) => setEngineSide(e.target.value === "w" ? "w" : "b")}
             >
-              <option value="w">Motore: Bianco</option>
-              <option value="b">Motore: Nero</option>
+              <option value="w">{t("Motore: Bianco", "Engine: White")}</option>
+              <option value="b">{t("Motore: Nero", "Engine: Black")}</option>
             </select>
           </label>
         </div>
@@ -2060,7 +2087,7 @@ export default function App() {
     const pgnContent = (
       <div style={{ display: "grid", gap: 12 }}>
         <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.mInfoText}>Partite nel PGN</div>
+          <div style={styles.mInfoText}>{t("Partite nel PGN", "PGN Games")}</div>
           <div
             style={{
               display: "flex",
@@ -2106,17 +2133,17 @@ export default function App() {
           </div>
           {games.length ? (
             <div style={{ fontSize: 12, color: "#6b7280", wordBreak: "break-word" }}>
-              Partita {gameIndex + 1} di {games.length}
+              {isEnglish ? `Game ${gameIndex + 1} of ${games.length}` : `Partita ${gameIndex + 1} di ${games.length}`}
             </div>
           ) : null}
         </div>
         <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.mInfoText}>Oppure incolla qui il PGN</div>
+          <div style={styles.mInfoText}>{t("Oppure incolla qui il PGN", "Or paste the PGN here")}</div>
           <textarea
             style={styles.textarea}
             value={rawPgn}
             onChange={(e) => setRawPgn(e.target.value)}
-            placeholder="Incolla qui il tuo PGN..."
+            placeholder={t("Incolla qui il tuo PGN...", "Paste your PGN here...")}
           />
           <button style={{ ...styles.mAccentButton, width: "100%" }} onClick={loadFromTextarea}>
             Carica
@@ -2132,13 +2159,13 @@ export default function App() {
             onClick={() => setTraining((t) => !t)}
             style={chipStyle({ active: training })}
           >
-            {training ? "Allenamento: ON" : "Allenamento: OFF"}
+            {training ? t("Allenamento: ON", "Training: ON") : t("Allenamento: OFF", "Training: OFF")}
           </button>
           <button
             onClick={() => setVariantView((v) => (v === "tree" ? "inline" : "tree"))}
             style={chipStyle()}
           >
-            {`Varianti: ${variantView === "tree" ? "albero" : "in linea"}`}
+            {`${t("Varianti: ","Variations: ")}${variantView === "tree" ? t("albero","tree") : t("in linea","inline")}`}
           </button>
           <button
             onClick={() => setTtsEnabled((v) => !v)}
@@ -2147,23 +2174,30 @@ export default function App() {
           >
             TTS: {ttsEnabled ? "ON" : "OFF"}
           </button>
-        </div>
-        <div style={styles.mChipRow}>
+        <button
+          onClick={() => setLanguage((l) => (l === "it" ? "en" : "it"))}
+          style={chipStyle()}
+          title={t("Cambia lingua", "Toggle language")}
+        >
+          {language === "it" ? "Italiano" : "English"}
+        </button>
+      </div>
+      <div style={styles.mChipRow}>
           <button
             onClick={openAll}
             disabled={!(variantView === "tree" && hasAnyVariants)}
             style={chipStyle({ disabled: !(variantView === "tree" && hasAnyVariants) })}
-            title="Apri tutte le varianti"
+            title={t("Apri tutte le varianti", "Open all variations")}
           >
-            Apri tutto
+            {t("Apri tutto", "Open all")}
           </button>
           <button
             onClick={closeAll}
             disabled={!(variantView === "tree" && hasAnyVariants)}
             style={chipStyle({ disabled: !(variantView === "tree" && hasAnyVariants) })}
-            title="Chiudi tutte le varianti"
+            title={t("Chiudi tutte le varianti", "Close all variations")}
           >
-            Chiudi tutto
+            {t("Chiudi tutto", "Close all")}
           </button>
         </div>
         <div style={{ display: "grid", gap: 6 }}>
@@ -2186,10 +2220,10 @@ export default function App() {
     );
 
     const mobileTabs = [
-      { id: "moves", label: "Mosse" },
-      { id: "engine", label: "Motore" },
+      { id: "moves", label: t("Mosse","Moves") },
+      { id: "engine", label: t("Motore","Engine") },
       { id: "pgn", label: "PGN" },
-      { id: "settings", label: "Opzioni" },
+      { id: "settings", label: t("Opzioni","Settings") },
     ];
     const mobilePanels = {
       moves: movesContent,
@@ -2204,7 +2238,7 @@ export default function App() {
             <div>
               <div style={styles.title}>PGN Viewer</div>
               <div style={styles.mInfoText}>
-                Allenamento sulla linea principale + visualizzazione varianti + analisi motore.
+                {t("Allenamento sulla linea principale + visualizzazione varianti + analisi motore.", "Train on the main line + view variations + engine analysis.")}
               </div>
             </div>
             <div style={styles.mHeaderActions}>
@@ -2213,16 +2247,25 @@ export default function App() {
                 style={styles.mFileButton}
                 title="Carica un file PGN"
               >
-                Sfoglia
+                {t("Sfoglia","Browse")}
               </button>
               <button
                 onClick={resetGame}
                 style={styles.mAccentButton}
-                title="Nuova Partita (posizione iniziale)"
+                title={t("Nuova Partita (posizione iniziale)", "New game (initial position)")}
               >
-                Nuova
+                {t("Nuova","New")}
               </button>
             </div>
+          <div style={styles.mHeaderActions}>
+            <button
+              onClick={() => setLanguage((l) => (l === "it" ? "en" : "it"))}
+              style={styles.mFileButton}
+              title={t("Cambia lingua", "Toggle language")}
+            >
+              🌐 {language.toUpperCase()}
+            </button>
+          </div>
           </div>
           <input
             ref={fileInputRef}
@@ -2282,37 +2325,37 @@ export default function App() {
               onClick={goStart}
               disabled={atStart}
               style={navStyle(atStart)}
-              title="Inizio"
-              aria-label="Vai all'inizio"
+              title={t("Inizio", "Start")}
+              aria-label={t("Vai all'inizio", "Go to start")}
             >
-              {"\u00AB"} Inizio
+              {"\u00AB"} {t("Inizio", "Start")}
             </button>
             <button
               onClick={goPrev}
               disabled={atStart}
               style={navStyle(atStart)}
-              title="Indietro"
-              aria-label="Mossa precedente"
+              title={t("Indietro", "Back")}
+              aria-label={t("Mossa precedente", "Previous move")}
             >
-              {"\u2039"} Indietro
+              {"\u2039"} {t("Indietro", "Back")}
             </button>
             <button
               onClick={goNext}
               disabled={forwardDisabled}
               style={navStyle(forwardDisabled, true)}
-              title="Avanti"
-              aria-label="Mossa successiva"
+              title={t("Avanti", "Next")}
+              aria-label={t("Mossa successiva", "Next move")}
             >
-              Avanti {"\u203A"}
+              {t("Avanti", "Next")} {"\u203A"}
             </button>
             <button
               onClick={goEnd}
               disabled={atEnd}
               style={navStyle(atEnd)}
-              title="Fine"
-              aria-label="Vai alla fine"
+              title={t("Fine", "End")}
+              aria-label={t("Vai alla fine", "Go to end")}
             >
-              Fine {"\u00BB"}
+              {t("Fine", "End")} {"\u00BB"}
             </button>
           </div>
           <div style={styles.mInfoText}>{statusLine}</div>
@@ -2357,17 +2400,35 @@ export default function App() {
           <div>
             <div style={styles.title}>PGN Viewer</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Allenamento sulla linea principale + visualizzazione varianti (cliccabili) + analisi motore.
+              {t("Allenamento sulla linea principale + visualizzazione varianti (cliccabili) + analisi motore.", "Train on the main line + clickable variations + engine analysis.")}
             </div>
           </div>
           <div style={styles.controlsRow}>
-            <input type="file" accept=".pgn,.PGN,text/plain" onChange={handleFileChange} />
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pgn,.PGN,text/plain"
+                onChange={handleFileChange}
+                style={{ display: "none" }}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                style={styles.btn}
+                title={t("Carica un file PGN", "Load a PGN file")}
+              >
+                {t("Sfoglia","Browse")}
+              </button>
+              <span style={{ fontSize: 12, color: "#6b7280" }}>
+                {fileLabel || t("Nessun file selezionato.", "No file selected.")}
+              </span>
+            </div>
             <button
               onClick={resetGame}
               style={btnStyle(false)}
-              title="Nuova Partita (posizione iniziale)"
+              title={t("Nuova Partita (posizione iniziale)", "New game (initial position)")}
             >
-              Nuova Partita
+              {t("Nuova Partita", "New Game")}
             </button>
 
             {/* Navigazione */}
@@ -2375,44 +2436,44 @@ export default function App() {
               style={btnStyle(step === 0 || isAnimating)}
               onClick={goStart}
               disabled={step === 0 || isAnimating}
-              title="Inizio"
-              aria-label="Vai all'inizio"
+              title={t("Inizio", "Start")}
+              aria-label={t("Vai all'inizio", "Go to start")}
             >
-              {"\u00AB"} Inizio
+              {"\u00AB"} {t("Inizio", "Start")}
             </button>
             <button
               style={btnStyle(!(step > 0 && !isAnimating))}
               onClick={goPrev}
               disabled={!(step > 0 && !isAnimating)}
-              title="Indietro"
-              aria-label="Mossa precedente"
+              title={t("Indietro", "Back")}
+              aria-label={t("Mossa precedente", "Previous move")}
             >
-              {"\u2039"} Indietro
+              {"\u2039"} {t("Indietro", "Back")}
             </button>
             <button
               style={{ ...btnStyle(!(step < fenHistory.length - 1 && !isAnimating)), ...styles.btnPrimary }}
               onClick={goNext}
               disabled={!(step < fenHistory.length - 1 && !isAnimating)}
-              title="Avanti"
-              aria-label="Mossa successiva"
+              title={t("Avanti", "Next")}
+              aria-label={t("Mossa successiva", "Next move")}
             >
-              Avanti {"\u203A"}
+              {t("Avanti", "Next")} {"\u203A"}
             </button>
             <button
               style={btnStyle(isAnimating || step === Math.max(0, fenHistory.length - 1))}
               onClick={goEnd}
               disabled={isAnimating || step === Math.max(0, fenHistory.length - 1)}
-              title="Fine"
-              aria-label="Vai alla fine"
+              title={t("Fine", "End")}
+              aria-label={t("Vai alla fine", "Go to end")}
             >
-              Fine {"\u00BB"}
+              {t("Fine", "End")} {"\u00BB"}
             </button>
             <button
               onClick={() => setTraining((t) => !t)}
               style={{ ...styles.btn, ...(training ? styles.btnToggleOn : styles.btnToggleOff) }}
               title="Attiva/Disattiva modalitÃ  allenamento (solo linea principale)"
             >
-              {training ? "Allenamento: ON" : "Allenamento: OFF"}
+              {training ? t("Allenamento: ON", "Training: ON") : t("Allenamento: OFF", "Training: OFF")}
             </button>
             <button
               onClick={() => setTtsEnabled((v) => !v)}
@@ -2421,7 +2482,7 @@ export default function App() {
                 ...(speechAvailable ? (ttsEnabled ? styles.btnToggleOn : styles.btnToggleOff) : styles.btnDisabled),
               }}
               disabled={!speechAvailable}
-              title={speechAvailable ? "Leggi i commenti tramite sintesi vocale" : "Sintesi vocale non supportata"}
+              title={speechAvailable ? t("Leggi i commenti tramite sintesi vocale", "Read comments via speech synthesis") : t("Sintesi vocale non supportata", "Speech synthesis not supported")}
             >
               TTS: {ttsEnabled ? "ON" : "OFF"}
             </button>
@@ -2431,9 +2492,9 @@ export default function App() {
             <button
               onClick={() => setVariantView(v => v === 'tree' ? 'inline' : 'tree')}
               style={styles.btn}
-              title="Cambia modalitÃ  di visualizzazione delle varianti"
+              title={t("Cambia modalità di visualizzazione delle varianti", "Change variation display mode")}
             >
-              Varianti: {variantView === 'tree' ? 'albero' : 'in linea'}
+              {t("Varianti:", "Variations:")} {variantView === 'tree' ? t("albero", "tree") : t("in linea", "inline")}
             </button>
 
             {/* Apri/Chiudi tutto */}
@@ -2441,22 +2502,22 @@ export default function App() {
               onClick={openAll}
               style={btnStyle(!(variantView === 'tree' && hasAnyVariants))}
               disabled={!(variantView === 'tree' && hasAnyVariants)}
-              title="Apri tutte le varianti"
+              title={t("Apri tutte le varianti", "Open all variations")}
             >
-              Apri tutto
+              {t("Apri tutto", "Open all")}
             </button>
             <button
               onClick={closeAll}
               style={btnStyle(!(variantView === 'tree' && hasAnyVariants))}
               disabled={!(variantView === 'tree' && hasAnyVariants)}
-              title="Chiudi tutte le varianti"
+              title={t("Chiudi tutte le varianti", "Close all variations")}
             >
-              Chiudi tutto
+              {t("Chiudi tutto", "Close all")}
             </button>
 
             {/* Board size */}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 12, color: "#6b7280" }}>Scacchiera</span>
+              <span style={{ fontSize: 12, color: "#6b7280" }}>{t("Scacchiera", "Board")}</span>
               <input
                 type="range"
                 min={300}
@@ -2471,9 +2532,16 @@ export default function App() {
             <button
               onClick={() => setWhiteOrientation((w) => !w)}
               style={styles.btn}
-              title="Ruota la scacchiera"
+              title={t("Ruota la scacchiera", "Rotate the board")}
             >
-              {"\u21BB"} Ruota
+              {"\u21BB"} {t("Ruota", "Rotate")}
+            </button>
+            <button
+              onClick={() => setLanguage((l) => (l === "it" ? "en" : "it"))}
+              style={styles.btn}
+              title={t("Cambia lingua interfaccia", "Toggle interface language")}
+            >
+              🌐 {language.toUpperCase()}
             </button>
 
             <div style={styles.engineRow}>
@@ -2485,7 +2553,7 @@ export default function App() {
                   if (!next) stop();
                 }}
                 style={{ ...styles.btn, ...(engineOn ? styles.btnToggleOn : styles.btnToggleOff) }}
-                title={ready ? "Accendi/Spegni motore" : "Motore non ancora pronto"}
+                title={ready ? t("Accendi/Spegni motore", "Turn engine on/off") : t("Motore non ancora pronto", "Engine not ready yet")}
               >
                 {engineOn ? "Engine: ON" : "Engine: OFF"}
               </button>
@@ -2529,7 +2597,7 @@ export default function App() {
                   }
                 }}
                 style={{ ...styles.btn, ...(playVsEngine ? styles.btnToggleOn : styles.btnToggleOff) }}
-                title="Gioca contro il motore"
+                title={t("Gioca contro il motore", "Play against the engine")}
               >
                 VS Engine: {playVsEngine ? "ON" : "OFF"}
               </button>
@@ -2540,8 +2608,8 @@ export default function App() {
                 onChange={(e) => setEngineSide(((e.target.value === "w" ? "w" : "b") as 'w'|'b'))}
                 title="Colore del motore"
               >
-                <option value="w">Motore: Bianco</option>
-                <option value="b">Motore: Nero</option>
+                <option value="w">{t("Motore: Bianco", "Engine: White")}</option>
+                <option value="b">{t("Motore: Nero", "Engine: Black")}</option>
               </select>
             </div>
 
@@ -2549,7 +2617,7 @@ export default function App() {
             <button
               onClick={() => setShowBestArrow(s => !s)}
               style={{ ...styles.btn, ...(showBestArrow ? styles.btnToggleOn : styles.btnToggleOff) }}
-              title="Mostra/Nascondi freccia Best Move del motore"
+              title={t("Mostra/Nascondi freccia Best Move del motore", "Show/Hide engine best move arrow")}
             >
               Best move: {showBestArrow ? "ON" : "OFF"}
             </button>
@@ -2558,7 +2626,7 @@ export default function App() {
 
         <div style={styles.sectionGrid}>
           <div style={styles.card}>
-            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>Partite nel PGN</div>
+            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>{t("Partite nel PGN", "PGN Games")}</div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button
                 onClick={goPrevGame}
@@ -2596,22 +2664,22 @@ export default function App() {
             </div>
             {games.length ? (
               <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
-                Partita {gameIndex + 1} di {games.length}
+                {isEnglish ? `Game ${gameIndex + 1} of ${games.length}` : `Partita ${gameIndex + 1} di ${games.length}`}
               </div>
             ) : null}
           </div>
 
 
           <div style={styles.card}>
-            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>Oppure incolla qui il PGN</div>
+            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>{t("Oppure incolla qui il PGN", "Or paste the PGN here")}</div>
             <div style={{ display: "flex", gap: 8 }}>
               <textarea
                 style={styles.textarea}
                 value={rawPgn}
                 onChange={(e) => setRawPgn(e.target.value)}
-                placeholder="Incolla qui il tuo PGN..."
+                placeholder={t("Incolla qui il tuo PGN...", "Paste your PGN here...")}
               />
-              <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={loadFromTextarea}>Carica</button>
+              <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={loadFromTextarea}>{t("Carica", "Load")}</button>
             </div>
           </div>
         </div>
@@ -2720,7 +2788,7 @@ export default function App() {
           <div style={styles.right} ref={movesPaneRef}>
             {!treeMain ? (
               <div style={{ fontSize: 12, color: "#6b7280" }}>
-                Carica un PGN e seleziona una partita per vedere mosse, commenti e varianti.
+                {t("Carica un PGN e seleziona una partita per vedere mosse, commenti e varianti.", "Load a PGN and pick a game to see moves, comments, and variations.")}
               </div>
             ) : (
               <div style={styles.flow}>{flow}</div>
@@ -2767,6 +2835,13 @@ export default function App() {
     </div>
   );
 }
+
+
+
+
+
+
+
 
 
 
