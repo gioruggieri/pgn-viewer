@@ -1018,7 +1018,7 @@ export default function App() {
 
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [speechAvailable, setSpeechAvailable] = useState(false);
-  const [language, setLanguage] = useState<"it" | "en">("it");
+  const [language, setLanguage] = useState<"it" | "en">("en");
   // Persist & restore UI language
   useEffect(() => {
     try {
