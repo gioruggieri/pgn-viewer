@@ -1192,7 +1192,9 @@ export default function App() {
     />
   );
 
-  const mateMessage = isCheckmate ? `Scacco matto! Vince ${checkmatedColor === "w" ? "il Nero" : "il Bianco"}.` : null;
+  const mateWinnerIt = checkmatedColor === "w" ? "il Nero" : "il Bianco";
+  const mateWinnerEn = checkmatedColor === "w" ? "Black" : "White";
+  const mateMessage = isCheckmate ? t(`Scacco matto! Vince ${mateWinnerIt}.`, `Checkmate! ${mateWinnerEn} wins.`) : null;
 
   const statusExtras: string[] = [];
   if (isAnimating) statusExtras.push("animazione...");
