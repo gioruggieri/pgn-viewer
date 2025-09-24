@@ -624,6 +624,7 @@ export default function App() {
   const [headers, setHeaders] = useState<Record<string, string>>({});
   const [isMobile, setIsMobile] = useState(() => detectMobile());
   const [mobileTab, setMobileTab] = useState<'moves' | 'pgn' | 'engine' | 'settings'>('moves');
+  const [mobileEngineSettingsOpen, setMobileEngineSettingsOpen] = useState(false);
 
   const [treeMain, setTreeMain] = useState<Line | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1117,6 +1118,79 @@ export default function App() {
     if (!engineOn || !bestArrow || !showBestArrowEffective) return [];
     return [bestArrow];
   }, [engineOn, bestArrow, showBestArrowEffective]);
+
+  const handlePlayEngineLine = (lineIndex: number) => {
+    const best = lines?.[lineIndex];
+    if (!best) return;
+    let fenList = Array.isArray(best.pvFens) ? best.pvFens.slice() : [];
+    if (!fenList.length) {
+      const base = new Chess(liveFen);
+      fenList = [base.fen()];
+      try {
+        for (const san of best.pvSan || []) {
+          base.move(san, { sloppy: true });
+          fenList.push(base.fen());
+        }
+      } catch {}
+    }
+    if (!fenList.length) return;
+    const finalIndex = Math.max(0, fenList.length - 1);
+    setFenHistory(fenList);
+    setStep(finalIndex);
+    setActiveNodeId(null);
+    setTraining(false);
+    setShowBestOnce(false);
+    setMoveFrom('');
+    setOptionSquares({});
+    chessGameRef.current = new Chess(fenList[finalIndex]);
+    hidePreview();
+  };
+
+  const handleSelectEngineMove = (lineIndex: number, moveIndex: number) => {
+    const line = lines?.[lineIndex];
+    if (!line) return;
+    let fenList = Array.isArray(line.pvFens) ? line.pvFens.slice() : [];
+    if (!fenList.length) {
+      const base = new Chess(liveFen);
+      fenList = [base.fen()];
+      try {
+        for (const san of line.pvSan || []) {
+          base.move(san, { sloppy: true });
+          fenList.push(base.fen());
+        }
+      } catch {}
+    }
+    if (!fenList.length) return;
+    const nextStep = Math.min(moveIndex + 1, fenList.length - 1);
+    const targetFen = fenList[nextStep];
+    if (!targetFen) return;
+    try {
+      setFenHistory(fenList);
+      setStep(nextStep);
+      setActiveNodeId(null);
+      setTraining(false);
+      setShowBestOnce(false);
+      setMoveFrom('');
+      setOptionSquares({});
+      chessGameRef.current = new Chess(targetFen);
+      hidePreview();
+    } catch {}
+  };
+
+  const renderEnginePanel = () => (
+    <EnginePanel
+      lines={lines}
+      thinking={thinking}
+      depth={engineDepth}
+      onPlayLine={handlePlayEngineLine}
+      onSelectMove={handleSelectEngineMove}
+      baseFen={liveFen}
+      onPreviewFen={showPreview}
+      onPreviewMove={movePreview}
+      onHidePreview={hidePreview}
+      t={t}
+    />
+  );
 
   const mateMessage = isCheckmate ? `Scacco matto! Vince ${checkmatedColor === "w" ? "il Nero" : "il Bianco"}.` : null;
 
@@ -2014,73 +2088,55 @@ export default function App() {
           >
             {showBestArrow ? "Best move: ON" : "Best move: OFF"}
           </button>
+          <button
+            onClick={() => setMobileEngineSettingsOpen((s) => !s)}
+            style={chipStyle({ active: mobileEngineSettingsOpen })}
+            title={mobileEngineSettingsOpen ? t("Nascondi impostazioni motore", "Hide engine settings") : t("Mostra impostazioni motore", "Show engine settings")}
+          >
+            {mobileEngineSettingsOpen ? t("Nascondi impostazioni", "Hide settings") : t("Mostra impostazioni", "Show settings")}
+          </button>
         </div>
-        <div style={{ display: "grid", gap: 8 }}>
-          <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
-            Depth
-            <input
-              type="number"
-              min={8}
-              max={35}
-              value={engineDepth}
-              onChange={(e) => setEngineDepth(Number(e.target.value))}
-              style={{ width: "100%", padding: 8, borderRadius: 10, border: "1px solid #d1d5db" }}
-            />
-          </label>
-          <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
-            MultiPV
-            <input
-              type="number"
-              min={1}
-              max={5}
-              value={engineMPV}
-              onChange={(e) => setEngineMPV(Number(e.target.value))}
-              style={{ width: "100%", padding: 8, borderRadius: 10, border: "1px solid #d1d5db" }}
-            />
-          </label>
-          <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
-            Colore del motore
-            <select
-              style={styles.select}
-              value={engineSide}
-              onChange={(e) => setEngineSide(e.target.value === "w" ? "w" : "b")}
-            >
-              <option value="w">{t("Motore: Bianco", "Engine: White")}</option>
-              <option value="b">{t("Motore: Nero", "Engine: Black")}</option>
-            </select>
-          </label>
-        </div>
-        {engineErr && <div style={{ color: "#b91c1c", fontSize: 12 }}>{engineErr}</div>}
-        {engineOn && (
-          <div style={{ overflowX: "auto" }}>
-            <EnginePanel
-              lines={lines}
-              thinking={thinking}
-              depth={engineDepth}
-              onPlayLine={(i) => {
-                const best = lines[i];
-                if (!best) return;
-                try {
-                  const c = new Chess(liveFen);
-                  const newFens = [c.fen()];
-                  for (const san of best.pvSan) {
-                    c.move(san, { sloppy: true });
-                    newFens.push(c.fen());
-                  }
-                  setFenHistory(newFens);
-                  setStep(0);
-                  setActiveNodeId(null);
-                  setTraining(false);
-                  setShowBestOnce(false);
-                  // Resetta anche lo stato per click and move
-                  setMoveFrom('');
-                  setOptionSquares({});
-                  chessGameRef.current = new Chess(newFens[newFens.length - 1]);
-                } catch {}
-              }}
-            />
+        {mobileEngineSettingsOpen && (
+          <div style={{ display: "grid", gap: 8 }}>
+            <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
+              Depth
+              <input
+                type="number"
+                min={8}
+                max={35}
+                value={engineDepth}
+                onChange={(e) => setEngineDepth(Number(e.target.value))}
+                style={{ width: "100%", padding: 8, borderRadius: 10, border: "1px solid #d1d5db" }}
+              />
+            </label>
+            <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
+              MultiPV
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={engineMPV}
+                onChange={(e) => setEngineMPV(Number(e.target.value))}
+                style={{ width: "100%", padding: 8, borderRadius: 10, border: "1px solid #d1d5db" }}
+              />
+            </label>
+            <label style={{ ...styles.mInfoText, display: "grid", gap: 4 }}>
+              Colore del motore
+              <select
+                style={styles.select}
+                value={engineSide}
+                onChange={(e) => setEngineSide(e.target.value === "w" ? "w" : "b")}
+              >
+                <option value="w">{t("Motore: Bianco", "Engine: White")}</option>
+                <option value="b">{t("Motore: Nero", "Engine: Black")}</option>
+              </select>
+            </label>
           </div>
         )}
+        {engineErr && <div style={{ color: "#b91c1c", fontSize: 12 }}>{engineErr}</div>}
+        <div style={{ maxHeight: "50vh", overflowY: "auto" }}>
+          {renderEnginePanel()}
+        </div>
       </div>
     );
 
@@ -2747,32 +2803,7 @@ export default function App() {
             {/* Pannello varianti del motore */}
             {engineOn && (
               <div style={{ marginTop: 8 }}>
-                <EnginePanel
-                  lines={lines}
-                  thinking={thinking}
-                  depth={engineDepth}
-                  onPlayLine={(i) => {
-                    const best = lines[i];
-                    if (!best) return;
-                    try {
-                      const c = new Chess(liveFen);
-                      const newFens = [c.fen()];
-                      for (const san of best.pvSan) {
-                        c.move(san, { sloppy: true });
-                        newFens.push(c.fen());
-                      }
-                      setFenHistory(newFens);
-                      setStep(0);
-                      setActiveNodeId(null);
-                      setTraining(false);
-                      setShowBestOnce(false);
-                      // Resetta anche lo stato per click and move
-                      setMoveFrom('');
-                      setOptionSquares({});
-                      chessGameRef.current = new Chess(newFens[newFens.length - 1]);
-                    } catch {}
-                  }}
-                />
+                {renderEnginePanel()}
               </div>
             )}
           </div>

@@ -9,6 +9,7 @@ export type EngineLine = {
   mate?: number;
   pvUci: string[];
   pvSan: string[];
+  pvFens: string[];
 };
 
 type Options = { multipv?: number; depth?: number };
@@ -21,6 +22,7 @@ const STOCKFISH_URL = `${BASE.replace(/\/+$/, "")}/engines/stockfish-17.1-lite-s
 function uciPathToSan(startFen: string, uciMoves: string[]) {
   const chess = new Chess(startFen);
   const sanMoves: string[] = [];
+  const fenFrames: string[] = [chess.fen()];
   for (const uci of uciMoves) {
     if (!uci || uci.length < 4) break;
     const from = uci.slice(0, 2);
@@ -32,8 +34,9 @@ function uciPathToSan(startFen: string, uciMoves: string[]) {
     } catch { mv = null; }
     if (!mv) break;
     sanMoves.push(mv.san);
+    fenFrames.push(chess.fen());
   }
-  return { moves: sanMoves, finalFen: chess.fen() };
+  return { moves: sanMoves, fens: fenFrames, finalFen: chess.fen() };
 }
 
 /** Handler di default per i messaggi del worker */
@@ -71,9 +74,9 @@ function defaultOnMessageFactory(params: {
         const pvUci  = mPv[1].trim().split(/\s+/).filter(Boolean);
 
         const fen = lastFenRef.current || new Chess().fen();
-        const { moves: pvSan } = uciPathToSan(fen, pvUci);
+        const { moves: pvSan, fens: pvFens } = uciPathToSan(fen, pvUci);
 
-        const line: EngineLine = { id: recIdx, depth, pvUci, pvSan };
+        const line: EngineLine = { id: recIdx, depth, pvUci, pvSan, pvFens };
         if (mMate) line.mate = Number(mMate[1]);
         else if (mCp) line.cp = Number(mCp[1]);
 
