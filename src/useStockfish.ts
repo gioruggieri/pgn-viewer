@@ -191,7 +191,7 @@ export function useStockfish() {
       // no ucinewgame/isready qui per evitare race
       w.postMessage(`setoption name MultiPV value ${multipv}`);
       w.postMessage(`position fen ${fen}`);
-      w.postMessage(`go depth ${depth} multipv ${multipv}`);
+      w.postMessage(`go depth ${depth}`);
     };
 
     if (delay) goTimerRef.current = window.setTimeout(run, delay) as any;
