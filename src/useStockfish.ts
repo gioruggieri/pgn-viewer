@@ -1,6 +1,30 @@
 // @ts-nocheck
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Chess } from "chess.js";
+
+export type StockfishEngineInfo = {
+  id: string;
+  label: string;
+  scriptPath: string;
+  supportsMultiPv: boolean;
+  maxMultiPv: number;
+  defaultThreads?: number;
+  defaultHash?: number;
+};
+
+const BASE = (import.meta as any)?.env?.BASE_URL || "/";
+
+function resolveEngineUrl(path: string) {
+  const base = String(BASE || "/").replace(/\/+$/, "");
+  const target = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${target}` || target;
+}
+
+export const STOCKFISH_ENGINES: StockfishEngineInfo[] = [
+  { id: "sf-171-lite", label: "Stockfish 17.1 Lite", scriptPath: "/engines/stockfish-17.1-lite-51f59da.js", supportsMultiPv: true, maxMultiPv: 6, defaultThreads: 1, defaultHash: 32 },
+  { id: "sf-171-lite-single", label: "Stockfish 17.1 Lite (Single PV)", scriptPath: "/engines/stockfish-17.1-lite-single-03e3232.js", supportsMultiPv: false, maxMultiPv: 1, defaultThreads: 1, defaultHash: 16 },
+  { id: "sf-171-full", label: "Stockfish 17.1", scriptPath: "/engines/stockfish-17.1-8e4d048.js", supportsMultiPv: true, maxMultiPv: 10, defaultThreads: 1, defaultHash: 64 },
+];
 
 export type EngineLine = {
   id: number;
@@ -13,10 +37,6 @@ export type EngineLine = {
 };
 
 type Options = { multipv?: number; depth?: number };
-
-/** Path assoluto al worker in `public/engines` (compatibile con BASE_URL) */
-const BASE = (import.meta as any)?.env?.BASE_URL || "/";
-const STOCKFISH_URL = `${BASE.replace(/\/+$/, "")}/engines/stockfish-17.1-lite-single-03e3232.js`;
 
 /** Converte una lista di mosse UCI in SAN partendo da un FEN */
 function uciPathToSan(startFen: string, uciMoves: string[]) {
@@ -99,7 +119,7 @@ function defaultOnMessageFactory(params: {
   };
 }
 
-export function useStockfish() {
+export function useStockfish(engine: StockfishEngineInfo = STOCKFISH_ENGINES[0]) {
   const [ready, setReady] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [lines, setLines] = useState<EngineLine[]>([]);
@@ -108,6 +128,8 @@ export function useStockfish() {
   const workerRef = useRef<Worker | null>(null);
   const optsRef   = useRef({ multipv: 3, depth: 18 } as Required<Options>);
   const lastFenRef = useRef("");
+  const initialEngine = engine ?? STOCKFISH_ENGINES[0];
+  const engineConfigRef = useRef(initialEngine);
 
   // stabilità
   const lastGoRef = useRef(0);
@@ -115,57 +137,81 @@ export function useStockfish() {
   const restartingRef = useRef(false);
   const diedRef = useRef(false);
 
-  useEffect(() => {
-    try {
-      const w = new Worker(STOCKFISH_URL, { type: "classic" });
-      workerRef.current = w;
+  const clearTimer = useCallback(() => {
+    if (goTimerRef.current) {
+      try { clearTimeout(goTimerRef.current); } catch {}
+      goTimerRef.current = null;
+    }
+  }, []);
 
-      const makeHandler = defaultOnMessageFactory({ setReady, setThinking, setLines, setEngineErr: (s)=>setEngineErr(s), lastFenRef });
+  const spawnWorker = useCallback((engineDef: StockfishEngineInfo) => {
+    engineConfigRef.current = engineDef ?? STOCKFISH_ENGINES[0];
+    const maxMultiPv = Math.max(1, engineDef?.maxMultiPv ?? 1);
+    const currentOpts = optsRef.current;
+    const safeMultiPv = engineDef.supportsMultiPv ? Math.min(Math.max(1, currentOpts.multipv), maxMultiPv) : 1;
+    optsRef.current = { ...currentOpts, multipv: safeMultiPv };
+    clearTimer();
+    try { workerRef.current?.terminate?.(); } catch {}
+    workerRef.current = null;
+    setReady(false);
+    setThinking(false);
+    setLines([]);
+    setEngineErr(null);
+
+    const engineUrl = resolveEngineUrl(engineDef.scriptPath);
+
+    try {
+      const w = new Worker(engineUrl, { type: "classic" });
+      workerRef.current = w;
+      diedRef.current = false;
+
+      const makeHandler = defaultOnMessageFactory({
+        setReady,
+        setThinking,
+        setLines,
+        setEngineErr: (s) => setEngineErr(s),
+        lastFenRef,
+        engineOptions: { threads: engineDef.defaultThreads ?? 1, hash: engineDef.defaultHash ?? 16 },
+      });
       w.onmessage = makeHandler(w);
       w.onerror = (e) => {
         const msg = String((e as any)?.message || e.type || e);
         setEngineErr(`Worker error: ${msg}`);
-        if (/unreachable|RuntimeError/i.test(msg)) { diedRef.current = true; restartWorker(); }
+        if (/unreachable|RuntimeError/i.test(msg)) {
+          diedRef.current = true;
+          if (!restartingRef.current) {
+            restartingRef.current = true;
+            setTimeout(() => {
+              restartingRef.current = false;
+              spawnWorker(engineConfigRef.current);
+            }, 150);
+          }
+        }
       };
 
       w.postMessage("uci");
     } catch (err: any) {
       setEngineErr("Impossibile avviare Stockfish: " + String(err?.message ?? err));
     }
+  }, [clearTimer, setReady, setThinking, setLines, setEngineErr]);
 
-    return () => { try { workerRef.current?.terminate(); } catch {} workerRef.current = null; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function restartWorker() {
-    if (restartingRef.current) return;
-    restartingRef.current = true;
-    try { workerRef.current?.terminate(); } catch {}
-    workerRef.current = null;
-    setReady(false);
-    setThinking(false);
-    setLines([]);
-    setEngineErr(null);
-    try {
-      const w = new Worker(STOCKFISH_URL, { type: "classic" });
-      workerRef.current = w;
-      diedRef.current = false;
-      const makeHandler = defaultOnMessageFactory({ setReady, setThinking, setLines, setEngineErr: (s)=>setEngineErr(s), lastFenRef });
-      w.onmessage = makeHandler(w);
-      w.onerror = (e) => {
-        const msg = String((e as any)?.message || e.type || e);
-        setEngineErr(`Worker error: ${msg}`);
-      };
-      w.postMessage("uci");
-    } catch (err: any) {
-      setEngineErr("Impossibile riavviare Stockfish: " + String(err?.message ?? err));
-    } finally {
-      restartingRef.current = false;
-    }
-  }
+  useEffect(() => {
+    const effectiveEngine = engine ?? STOCKFISH_ENGINES[0];
+    spawnWorker(effectiveEngine);
+    return () => {
+      clearTimer();
+      try { workerRef.current?.terminate(); } catch {}
+      workerRef.current = null;
+    };
+  }, [engine, spawnWorker, clearTimer]);
 
   function setOptions(next: Partial<Options>) {
-    optsRef.current = { ...optsRef.current, ...next };
+    const engineCfg = engineConfigRef.current ?? STOCKFISH_ENGINES[0];
+    const maxMultiPv = Math.max(1, engineCfg?.maxMultiPv ?? 1);
+    const supportsMultiPv = !!engineCfg?.supportsMultiPv;
+    const merged = { ...optsRef.current, ...next } as Required<Options>;
+    merged.multipv = supportsMultiPv ? Math.min(Math.max(1, merged.multipv), maxMultiPv) : 1;
+    optsRef.current = merged;
   }
 
   function analyze(fen: string, partial?: Partial<Options>) {
@@ -174,7 +220,11 @@ export function useStockfish() {
     if (diedRef.current) return;
     if (!ready) return;
 
+    const engineCfg = engineConfigRef.current ?? STOCKFISH_ENGINES[0];
     const { multipv, depth } = { ...optsRef.current, ...partial };
+    const maxMultiPv = Math.max(1, engineCfg?.maxMultiPv ?? 1);
+    const supportsMultiPv = !!engineCfg?.supportsMultiPv;
+    const clampedMultiPv = supportsMultiPv ? Math.min(Math.max(1, multipv), maxMultiPv) : 1;
 
     lastFenRef.current = fen;
     setLines([]);
@@ -189,7 +239,7 @@ export function useStockfish() {
       lastGoRef.current = Date.now();
       w.postMessage("stop");
       // no ucinewgame/isready qui per evitare race
-      w.postMessage(`setoption name MultiPV value ${multipv}`);
+      if (supportsMultiPv) w.postMessage(`setoption name MultiPV value ${clampedMultiPv}`);
       w.postMessage(`position fen ${fen}`);
       w.postMessage(`go depth ${depth}`);
     };
@@ -200,8 +250,23 @@ export function useStockfish() {
 
   function stop() {
     workerRef.current?.postMessage("stop");
+    clearTimer();
     setThinking(false);
   }
 
   return { ready, thinking, lines, engineErr, setOptions, analyze, stop };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
