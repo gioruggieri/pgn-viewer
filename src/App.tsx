@@ -1428,6 +1428,9 @@ export default function App() {
   const [step, setStep] = useState(0);
 
   const [playedMoves, setPlayedMoves] = useState<PlayedMove[]>([]);
+  const TRAINING_AUTO_DELAY_MS = 500;
+  const trainingAutoMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingTrainingAutoMoveRef = useRef(false);
 
   const liveFen = fenHistory[step] || new Chess().fen();
 
@@ -1716,10 +1719,31 @@ export default function App() {
   const animTimerRef = useRef<any>(null);
 
   const stepRef = useRef(step);
+  const clearTrainingAutoMoveTimer = useCallback(() => {
+    if (trainingAutoMoveTimerRef.current !== null) {
+      clearTimeout(trainingAutoMoveTimerRef.current);
+      trainingAutoMoveTimerRef.current = null;
+    }
+  }, []);
+  const scheduleTrainingAutoMove = useCallback((fn: () => void) => {
+    clearTrainingAutoMoveTimer();
+    trainingAutoMoveTimerRef.current = setTimeout(() => {
+      trainingAutoMoveTimerRef.current = null;
+      fn();
+    }, TRAINING_AUTO_DELAY_MS);
+  }, [clearTrainingAutoMoveTimer]);
 
   const lastSpokenKeyRef = useRef<string | null>(null);
 
   useEffect(() => { stepRef.current = step; }, [step]);
+  useEffect(() => () => clearTrainingAutoMoveTimer(), [clearTrainingAutoMoveTimer]);
+
+  useEffect(() => {
+    if (!training) {
+      pendingTrainingAutoMoveRef.current = false;
+      clearTrainingAutoMoveTimer();
+    }
+  }, [training, clearTrainingAutoMoveTimer]);
 
 
 
@@ -1926,6 +1950,8 @@ export default function App() {
   useEffect(() => {
 
     if (!games.length) return;
+    pendingTrainingAutoMoveRef.current = false;
+    clearTrainingAutoMoveTimer();
 
 
 
@@ -2305,6 +2331,12 @@ export default function App() {
   // === Play vs Engine ===
 
   const [playVsEngine, setPlayVsEngine] = useState(false);
+  useEffect(() => {
+    if (playVsEngine) {
+      pendingTrainingAutoMoveRef.current = false;
+      clearTrainingAutoMoveTimer();
+    }
+  }, [playVsEngine, clearTrainingAutoMoveTimer]);
 
   const [engineSide, setEngineSide] = useState<'w'|'b'>('b');
 
@@ -3174,69 +3206,62 @@ export default function App() {
 
     if (step >= currentLinePlies.length) return;
 
-
+    if (pendingTrainingAutoMoveRef.current) return;
 
     const expectedPly = currentLinePlies[step];
 
     if (!expectedPly) return;
 
-
-
     const expectedColor = expectedPly.isWhite ? 'w' : 'b';
 
     if (expectedColor === trainingColor) return;
-
-
 
     const baseFen = fenHistory[step];
 
     if (!baseFen) return;
 
-
-
+    let autoMove: any = null;
+    let newFen = '';
     try {
-
       const chess = new Chess(baseFen);
-
-      const autoMove = chess.move(expectedPly.sanClean, { sloppy: true });
-
+      autoMove = chess.move(expectedPly.sanClean, { sloppy: true });
       if (!autoMove) return;
+      newFen = chess.fen();
+    } catch {
+      return;
+    }
 
+    const expectedStepIndex = stepRef.current;
+    const expectedNodeId = expectedPly.id;
 
+    pendingTrainingAutoMoveRef.current = true;
 
-      const newFen = chess.fen();
+    scheduleTrainingAutoMove(() => {
+      pendingTrainingAutoMoveRef.current = false;
 
+      if (!training || playVsEngine) return;
+      if (stepRef.current !== expectedStepIndex) return;
 
+      const nodeAtStep = currentLinePlies[expectedStepIndex];
+      if (!nodeAtStep || nodeAtStep.id !== expectedNodeId) return;
 
       recordPlayedMoves([{ move: autoMove, fen: newFen }]);
 
-
-
       setFenHistory((prev) => {
-
-        const head = prev.slice(0, step + 1);
-
+        const head = prev.slice(0, expectedStepIndex + 1);
+        if (head[head.length - 1] === newFen) return prev;
         return [...head, newFen];
-
       });
 
-
-
-      setStep((s) => s + 1);
-
-
+      setStep((s) => (s === expectedStepIndex ? s + 1 : s));
 
       chessGameRef.current = new Chess(newFen);
 
-
-
       setMoveFrom('');
-
       setOptionSquares({});
+    });
 
-    } catch {}
-
-  }, [training, trainingColor, playVsEngine, step, currentLinePlies, fenHistory, recordPlayedMoves]);
+  }, [training, trainingColor, playVsEngine, step, currentLinePlies, fenHistory, recordPlayedMoves, scheduleTrainingAutoMove]);
 
 
 
@@ -3346,15 +3371,13 @@ export default function App() {
 
 
 
-        let autoApplied = false;
+        const nextIndex = stepRef.current + 1;
+
+        const replyPly = currentLinePlies[nextIndex];
 
         let autoFen: string | null = null;
 
         let autoReplyMove: any = null;
-
-        const nextIndex = stepRef.current + 1;
-
-        const replyPly = currentLinePlies[nextIndex];
 
         if (replyPly && replyPly.isWhite !== expected.isWhite) {
 
@@ -3363,8 +3386,6 @@ export default function App() {
             autoReplyMove = chess.move(replyPly.sanClean, { sloppy: true });
 
             autoFen = chess.fen();
-
-            autoApplied = true;
 
           } catch {
 
@@ -3376,33 +3397,13 @@ export default function App() {
 
         }
 
+        recordPlayedMoves([{ move: userMoveApplied, fen: newFen }]);
 
+        setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
 
-        const historyEntries: Array<{ move: any; fen: string }> = [{ move: userMoveApplied, fen: newFen }];
+        setStep((s) => s + 1);
 
-        if (autoApplied && autoFen && autoReplyMove) {
-
-          historyEntries.push({ move: autoReplyMove, fen: autoFen });
-
-        }
-
-        recordPlayedMoves(historyEntries);
-
-
-
-        setFenHistory((prev) => {
-
-          const head = prev.slice(0, stepRef.current + 1);
-
-          if (autoApplied && autoFen) return [...head, newFen, autoFen];
-
-          return [...head, newFen];
-
-        });
-
-        setStep((s) => s + (autoApplied ? 2 : 1));
-
-        chessGameRef.current = new Chess(autoApplied && autoFen ? autoFen : newFen);
+        chessGameRef.current = new Chess(newFen);
 
         flash(true, "Giusto!");
 
@@ -3410,9 +3411,59 @@ export default function App() {
 
         setOptionSquares({});
 
-        // quando esegui correttamente, togli l'hint "once"
+        if (autoReplyMove && autoFen && replyPly) {
 
-        if (playVsEngine) setEngineMovePending(true);
+          const expectedStepAfterUser = stepRef.current + 1;
+
+          const replyNodeId = replyPly.id;
+
+          pendingTrainingAutoMoveRef.current = true;
+
+          scheduleTrainingAutoMove(() => {
+
+            pendingTrainingAutoMoveRef.current = false;
+
+            if (!training || playVsEngine) return;
+
+            if (stepRef.current !== expectedStepAfterUser) return;
+
+            const nodeAtStep = currentLinePlies[expectedStepAfterUser];
+
+            if (!nodeAtStep || nodeAtStep.id !== replyNodeId) return;
+
+            recordPlayedMoves([{ move: autoReplyMove, fen: autoFen }]);
+
+            setFenHistory((prev) => {
+
+              const head = prev.slice(0, expectedStepAfterUser + 1);
+
+              if (head[head.length - 1] === autoFen) return prev;
+
+              return [...head, autoFen];
+
+            });
+
+            setStep((s) => (s === expectedStepAfterUser ? s + 1 : s));
+
+            chessGameRef.current = new Chess(autoFen);
+
+            if (playVsEngine) setEngineMovePending(true);
+
+            setMoveFrom('');
+
+            setOptionSquares({});
+
+          });
+
+        } else {
+
+          pendingTrainingAutoMoveRef.current = false;
+
+          clearTrainingAutoMoveTimer();
+
+          if (playVsEngine) setEngineMovePending(true);
+
+        }
 
         setShowBestOnce(false);
 
@@ -3487,6 +3538,8 @@ export default function App() {
   // === Reset partita / nuova partita ===
 
   const resetGame = () => {
+    pendingTrainingAutoMoveRef.current = false;
+    clearTrainingAutoMoveTimer();
 
     try { stop(); } catch {}
 
@@ -3823,6 +3876,8 @@ export default function App() {
   /* ---------------- Rendering (inline + main) ---------------- */
 
   const goToNode = (node: PlyNode) => {
+    pendingTrainingAutoMoveRef.current = false;
+    clearTrainingAutoMoveTimer();
 
 
 
@@ -6614,6 +6669,7 @@ export default function App() {
   );
 
 }
+
 
 
 
