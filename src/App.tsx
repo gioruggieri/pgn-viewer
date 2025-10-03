@@ -332,6 +332,16 @@ type PlayedMove = {
 
 
 
+
+type PremoveEntry = {
+  from: string;
+  to: string;
+  piece: string;
+  color: 'w' | 'b';
+  promotion?: string;
+  queuedAtStep: number;
+};
+
 type Line = {
 
   lid: number;
@@ -2866,6 +2876,19 @@ export default function App() {
 
   const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
 
+  const [premoves, setPremoves] = useState<PremoveEntry[]>([]);
+  const premovesRef = useRef<PremoveEntry[]>([]);
+  const executingPremoveRef = useRef(false);
+  const clearPremoves = useCallback(() => {
+    premovesRef.current = [];
+    setPremoves([]);
+  }, []);
+
+  const queuePremove = useCallback((entry: PremoveEntry) => {
+    premovesRef.current = [entry];
+    setPremoves([...premovesRef.current]);
+  }, []);
+
   const baseSquareStyles = useMemo(() => {
 
     const styles: Record<string, React.CSSProperties> = { ...customSquareStyles };
@@ -2892,7 +2915,24 @@ export default function App() {
 
 
 
-  const boardSquareStyles = useMemo(() => ({ ...baseSquareStyles, ...optionSquares }), [baseSquareStyles, optionSquares]);
+  const premoveSquareStyles = useMemo(() => {
+    const styles: Record<string, React.CSSProperties> = {};
+    premoves.forEach(({ from, to }) => {
+      styles[from] = {
+        ...(styles[from] || {}),
+        boxShadow: "inset 0 0 0 2px rgba(37,99,235,0.6)",
+        background: "rgba(37,99,235,0.25)",
+      };
+      styles[to] = {
+        ...(styles[to] || {}),
+        boxShadow: "inset 0 0 0 2px rgba(37,99,235,0.6)",
+        background: "rgba(37,99,235,0.2)",
+      };
+    });
+    return styles;
+  }, [premoves]);
+
+  const boardSquareStyles = useMemo(() => ({ ...baseSquareStyles, ...optionSquares, ...premoveSquareStyles }), [baseSquareStyles, optionSquares, premoveSquareStyles]);
 
 
 
@@ -3062,23 +3102,37 @@ export default function App() {
 
     if (!moveFrom && piece) {
 
-      // get the move options for the square
-
       const hasMoveOptions = getMoveOptions(square);
-
-
-
-      // if move options, set the moveFrom to the square
 
       if (hasMoveOptions) {
 
         setMoveFrom(square);
 
+        return;
+
       }
 
+      const boardTurn = chessGameRef.current.turn();
 
+      const pieceColor = typeof piece === "string" ? piece[0] : undefined;
 
-      // return early
+      if (pieceColor && pieceColor !== boardTurn) {
+
+        setMoveFrom(square);
+
+        setOptionSquares({
+
+          [square]: {
+
+            background: "rgba(37,99,235,0.25)",
+
+            boxShadow: "inset 0 0 0 2px rgba(37,99,235,0.45)",
+
+          },
+
+        });
+
+      }
 
       return;
 
@@ -3100,6 +3154,28 @@ export default function App() {
 
     const foundMove = moves.find(m => m.from === moveFrom && m.to === square);
 
+    const moveFromPiece = chessGameRef.current.get(moveFrom);
+
+    const boardTurn = chessGameRef.current.turn();
+
+    const isPremovablePiece = moveFromPiece && moveFromPiece.color !== boardTurn;
+
+
+    if (!foundMove && isPremovablePiece) {
+
+      const success = applyDrop(moveFrom, square);
+
+      if (success) {
+
+        setMoveFrom('');
+
+        setOptionSquares({});
+
+        return;
+
+      }
+
+    }
 
 
     // not a valid move
@@ -3170,6 +3246,17 @@ export default function App() {
 
   }
 
+
+  const onSquareRightClick = () => {
+
+    setMoveFrom('');
+
+    setOptionSquares({});
+
+    clearPremoves();
+
+  };
+
   
 
   // ==== react-chessboard v5: onPieceDrop(args) -> boolean
@@ -3193,6 +3280,90 @@ export default function App() {
     }
 
   };
+
+
+
+  useEffect(() => {
+
+    if (!premovesRef.current.length) return;
+
+    const next = premovesRef.current[0];
+
+    if (!next) return;
+
+    if (stepRef.current < next.queuedAtStep) {
+
+      clearPremoves();
+
+      return;
+
+    }
+
+    if (stepRef.current === next.queuedAtStep) return;
+
+    let chess: Chess | null = null;
+
+    try {
+
+      chess = new Chess(liveFen);
+
+    } catch {
+
+      chess = null;
+
+    }
+
+    if (!chess) {
+
+      clearPremoves();
+
+      return;
+
+    }
+
+    if (chess.turn() !== next.color) {
+
+      const piece = chess.get(next.from);
+
+      if (!piece || piece.color !== next.color) {
+
+        clearPremoves();
+
+      }
+
+      return;
+
+    }
+
+    const piece = chess.get(next.from);
+
+    if (!piece || piece.color !== next.color) {
+
+      clearPremoves();
+
+      return;
+
+    }
+
+    executingPremoveRef.current = true;
+
+    const success = applyDrop(next.from, next.to);
+
+    executingPremoveRef.current = false;
+
+    if (!success) {
+
+      clearPremoves();
+
+      return;
+
+    }
+
+    premovesRef.current = premovesRef.current.slice(1);
+
+    setPremoves([...premovesRef.current]);
+
+  }, [liveFen, premoves.length, step]);
 
 
 
@@ -3274,6 +3445,42 @@ export default function App() {
     const baseFen = fenHistory[stepRef.current];
 
     const chess = new Chess(baseFen);
+
+    const pieceOnSource = chess.get(sourceSquare);
+
+    if (!pieceOnSource) return false;
+
+    const pieceColor = pieceOnSource.color;
+
+    if (!executingPremoveRef.current) {
+
+      if (pieceColor !== chess.turn()) {
+
+        queuePremove({
+
+          from: sourceSquare,
+
+          to: targetSquare,
+
+          piece: `${pieceColor}${pieceOnSource.type.toUpperCase()}`,
+
+          color: pieceColor,
+
+          promotion: 'q',
+
+          queuedAtStep: stepRef.current,
+
+        });
+
+        return true;
+
+      }
+
+    } else if (pieceColor !== chess.turn()) {
+
+      return false;
+
+    }
 
     // VS Engine: consenti solo mosse umane nel loro turno
 
@@ -5426,6 +5633,8 @@ export default function App() {
 
                     onSquareClick,
 
+                    onSquareRightClick,
+
                     boardWidth: boardRenderWidth,
 
                     animationDuration: 200,
@@ -6284,6 +6493,8 @@ export default function App() {
 
                       onSquareClick,
 
+                      onSquareRightClick,
+
                       boardWidth: boardRenderWidth,
 
                       animationDuration: 200,
@@ -6669,6 +6880,10 @@ export default function App() {
   );
 
 }
+
+
+
+
 
 
 
