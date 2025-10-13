@@ -326,6 +326,8 @@ type PlayedMove = {
 
   to?: string | null;
 
+  comment?: string;
+
 };
 
 
@@ -341,6 +343,112 @@ type PremoveEntry = {
   promotion?: string;
   queuedAtStep: number;
 };
+
+type RecordedGame = {
+  id: string;
+  headers: Record<string, string>;
+  moves: PlayedMove[];
+  result: string;
+};
+
+const RECORD_HEADER_ORDER = ["Event", "Site", "Date", "Round", "White", "Black", "Result"];
+
+function formatPgnDate(date: Date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}.${m}.${d}`;
+}
+
+function normalizePgnDate(input: string) {
+  const trimmed = (input || "").trim();
+  if (!trimmed) return "????.??.??";
+  const re = /^(\d{4})[.\-/]?(\d{1,2})[.\-/]?(\d{1,2})$/;
+  const m = trimmed.match(re);
+  if (m) {
+    return `${m[1]}.${m[2].padStart(2, "0")}.${m[3].padStart(2, "0")}`;
+  }
+  return trimmed.replace(/\s+/g, " ");
+}
+
+function sanitizePgnComment(text: string) {
+  return text.replace(/\s+/g, " ").replace(/[{}]/g, "").trim();
+}
+
+function movesToMovetext(moves: PlayedMove[], result: string) {
+  if (!moves.length) return result || "*";
+  const parts: string[] = [];
+  let lastNumber = 0;
+  moves.forEach((move) => {
+    const cleaned = move.comment ? sanitizePgnComment(move.comment) : "";
+    const comment = cleaned ? ` {${cleaned}}` : "";
+    if (move.color === "w") {
+      parts.push(`${move.moveNumber}. ${move.san}${comment}`);
+    } else if (parts.length && lastNumber === move.moveNumber) {
+      parts[parts.length - 1] = `${parts[parts.length - 1]} ${move.san}${comment}`;
+    } else {
+      parts.push(`${move.moveNumber}... ${move.san}${comment}`);
+    }
+    lastNumber = move.moveNumber;
+  });
+  const trimmedResult = (result || "*").trim() || "*";
+  return `${parts.join(" ")} ${trimmedResult}`.trim();
+}
+
+function buildRecordedGamePgn(headers: Record<string, string>, moves: PlayedMove[], result: string) {
+  const headerLines: string[] = [];
+  const extraHeaders: string[] = [];
+  const normalizedResult = (result || headers.Result || "*").trim() || "*";
+
+  RECORD_HEADER_ORDER.forEach((key) => {
+    let value = headers[key] ?? "";
+    if (key === "Result") value = normalizedResult;
+    else if (key === "Date") value = normalizePgnDate(value);
+    const finalValue = value.trim() ? value.trim() : key === "Date" ? "????.??.??" : "?";
+    headerLines.push(`[${key} "${finalValue}"]`);
+  });
+
+  Object.keys(headers)
+    .filter((key) => !RECORD_HEADER_ORDER.includes(key))
+    .sort()
+    .forEach((key) => {
+      const val = (headers[key] ?? "").trim();
+      if (val) extraHeaders.push(`[${key} "${val}"]`);
+    });
+
+  const movetext = movesToMovetext(moves, normalizedResult);
+  return [...headerLines, ...extraHeaders].join("\n") + `\n\n${movetext}`;
+}
+
+function recordedGamesToPgn(games: RecordedGame[]) {
+  return games
+    .map((game) => buildRecordedGamePgn(game.headers, game.moves, game.result))
+    .filter((chunk) => chunk && chunk.trim())
+    .join("\n\n")
+    .trim();
+}
+
+
+
+function defaultRecordHeaders(): Record<string, string> {
+
+  return {
+
+    Event: "Casual Game",
+
+    Site: "Local",
+
+    Date: formatPgnDate(),
+
+    Round: "1",
+
+    White: "",
+
+    Black: "",
+
+  };
+
+}
 
 type Line = {
 
@@ -922,6 +1030,110 @@ const styles = {
 
 
 
+  textInput: {
+
+    width: "100%",
+
+    padding: 8,
+
+    borderRadius: 10,
+
+    borderWidth: 1,
+
+    borderStyle: "solid" as const,
+
+    borderColor: "#d1d5db",
+
+    background: "white",
+
+    color: "#111827",
+
+  },
+
+
+
+  recorderPanel: {
+
+    display: "grid",
+
+    gap: 12,
+
+  },
+
+  recorderPanelMobile: {
+
+    display: "grid",
+
+    gap: 12,
+
+    background: "#fff",
+
+    borderRadius: 16,
+
+    padding: 12,
+
+    boxShadow: "0 10px 24px rgba(15,23,42,0.18)",
+
+  },
+
+
+
+  recorderActions: {
+
+    display: "flex",
+
+    flexWrap: "wrap" as const,
+
+    gap: 8,
+
+  },
+
+
+
+  recordedList: {
+
+    display: "grid",
+
+    gap: 6,
+
+    maxHeight: 160,
+
+    overflowY: "auto" as const,
+
+  },
+
+
+
+  recordedRow: {
+
+    display: "flex",
+
+    alignItems: "center",
+
+    justifyContent: "space-between",
+
+    gap: 8,
+
+    padding: "6px 8px",
+
+    borderRadius: 10,
+
+    background: "#f9fafb",
+
+    border: "1px solid #e5e7eb",
+
+    fontSize: 12,
+
+    color: "#374151",
+
+  },
+
+
+
+  recordedSummary: { fontSize: 12, color: "#4b5563" },
+
+
+
   moveNumber: { color: "#6b7280", paddingRight: 6 },
 
 
@@ -1444,11 +1656,98 @@ export default function App() {
   const [step, setStep] = useState(0);
 
   const [playedMoves, setPlayedMoves] = useState<PlayedMove[]>([]);
+
+  const [recordHeaders, setRecordHeaders] = useState<Record<string, string>>(() => defaultRecordHeaders());
+
+  const [recordResult, setRecordResult] = useState("*");
+
+  const [recordedGames, setRecordedGames] = useState<RecordedGame[]>([]);
+
+  const recordedIdRef = useRef(1);
+
+  const [recorderOpen, setRecorderOpen] = useState(false);
+
   const TRAINING_AUTO_DELAY_MS = 500;
   const trainingAutoMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingTrainingAutoMoveRef = useRef(false);
 
   const liveFen = fenHistory[step] || new Chess().fen();
+
+
+
+  const aggregatedRecordedPgn = useMemo(() => recordedGamesToPgn(recordedGames), [recordedGames]);
+
+
+
+  const activeRecordedMove = useMemo(
+
+    () => playedMoves.find((mv) => mv.fenIndex === step),
+
+    [playedMoves, step]
+
+  );
+
+
+
+  const activeFenIndex = activeRecordedMove?.fenIndex ?? null;
+
+
+
+  const activeCommentValue = activeRecordedMove?.comment ?? "";
+
+  const activeMoveLabel = useMemo(() => {
+
+    if (!activeRecordedMove) return "";
+
+    const prefix = activeRecordedMove.color === "w" ? `${activeRecordedMove.moveNumber}.` : `${activeRecordedMove.moveNumber}...`;
+
+    return `${prefix} ${activeRecordedMove.san}`;
+
+  }, [activeRecordedMove]);
+
+
+
+  const handleActiveCommentChange = useCallback(
+
+    (value: string) => {
+
+      if (activeFenIndex == null) return;
+
+      const normalized = value.replace(/\r\n/g, "\n");
+
+      setPlayedMoves((prev) =>
+
+        prev.map((mv) =>
+
+          mv.fenIndex === activeFenIndex ? { ...mv, comment: normalized } : mv
+
+        )
+
+      );
+
+    },
+
+    [activeFenIndex]
+
+  );
+
+
+
+  const clearActiveComment = useCallback(() => {
+
+    if (activeFenIndex == null) return;
+
+    setPlayedMoves((prev) =>
+
+      prev.map((mv) =>
+
+        mv.fenIndex === activeFenIndex ? { ...mv, comment: undefined } : mv
+
+      )
+
+    );
+
+  }, [activeFenIndex]);
 
 
 
@@ -2394,6 +2693,126 @@ export default function App() {
     feedbackTimer.current = setTimeout(() => setFeedback(null), 1400);
 
   };
+
+
+
+  const addRecordedGame = useCallback(() => {
+
+    if (!playedMoves.length) {
+
+      flash(false, t("Nessuna mossa da registrare.", "No moves to record."));
+
+      return;
+
+    }
+
+    const id = `rec-${recordedIdRef.current++}`;
+
+    const snapshotMoves = playedMoves.map((mv) => ({ ...mv }));
+
+    const snapshotHeaders = { ...recordHeaders };
+
+    const normalizedResult = (recordResult || "*").trim() || "*";
+
+    setRecordedGames((prev) => [...prev, { id, headers: snapshotHeaders, moves: snapshotMoves, result: normalizedResult }]);
+
+    flash(true, t("Partita aggiunta al tuo PGN personalizzato.", "Game added to your custom PGN."));
+
+  }, [playedMoves, recordHeaders, recordResult, flash]);
+
+
+
+  const removeRecordedGame = useCallback(
+
+    (id: string) => {
+
+      setRecordedGames((prev) => {
+
+        const next = prev.filter((game) => game.id !== id);
+
+        if (next.length !== prev.length) flash(true, t("Partita rimossa.", "Game removed."));
+
+        return next;
+
+      });
+
+    },
+
+    [flash]
+
+  );
+
+
+
+  const resetRecordingForm = useCallback(() => {
+
+    setRecordHeaders(defaultRecordHeaders());
+
+    setRecordResult("*");
+
+  }, []);
+
+
+
+  const downloadRecordedPgn = useCallback(() => {
+
+    if (!recordedGames.length) {
+
+      flash(false, t("Non ci sono partite registrate da salvare.", "No recorded games to save."));
+
+      return;
+
+    }
+
+    const text = aggregatedRecordedPgn;
+
+    if (!text.trim()) {
+
+      flash(false, t("Il PGN da salvare è vuoto.", "Generated PGN is empty."));
+
+      return;
+
+    }
+
+    if (typeof document === "undefined" || typeof window === "undefined") {
+
+      flash(false, t("Salvataggio disponibile solo nel browser.", "Saving is available in the browser only."));
+
+      return;
+
+    }
+
+    try {
+
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+
+      const base = (recordHeaders.Event || "my-games").trim().replace(/\s+/g, "_") || "my-games";
+
+      link.href = url;
+
+      link.download = `${base}-${Date.now()}.pgn`;
+
+      document.body.appendChild(link);
+
+      link.click();
+
+      document.body.removeChild(link);
+
+      URL.revokeObjectURL(url);
+
+      flash(true, t("PGN salvato correttamente.", "PGN saved successfully."));
+
+    } catch {
+
+      flash(false, t("Impossibile salvare il file PGN.", "Unable to save the PGN file."));
+
+    }
+
+  }, [aggregatedRecordedPgn, flash, recordedGames.length, recordHeaders.Event]);
 
 
 
@@ -4776,6 +5195,388 @@ export default function App() {
 
 
 
+  const renderRecorder = (mode: "panel" | "mobile") => {
+
+    const addDisabled = playedMoves.length === 0;
+
+    const commentDisabled = !activeRecordedMove;
+
+    const clearDisabled = commentDisabled || !activeCommentValue.trim();
+
+    const saveDisabled = recordedGames.length === 0;
+
+    const containerStyle = mode === "panel" ? styles.recorderPanel : styles.recorderPanelMobile;
+
+    const recordSummary = playedMoves.length
+
+      ? isEnglish
+
+        ? `Recorded moves: ${playedMoves.length}`
+
+        : `Mosse registrate: ${playedMoves.length}`
+
+      : t("Nessuna mossa manuale registrata.", "No manual moves recorded yet.");
+
+    const commentHint = activeRecordedMove
+
+      ? `${t("Commento per", "Comment for")} ${activeMoveLabel}`
+
+      : t("Seleziona una mossa dall'elenco per aggiungere un commento.", "Select a move from the list to add a comment.");
+
+    const gamesSummary = recordedGames.length
+
+      ? isEnglish
+
+        ? `Recorded games: ${recordedGames.length}`
+
+        : `Partite registrate: ${recordedGames.length}`
+
+      : "";
+
+    const headerFields = [
+
+      { key: "Event", label: t("Evento", "Event") },
+
+      { key: "Site", label: t("Luogo", "Site") },
+
+      { key: "Date", label: t("Data", "Date") },
+
+      { key: "Round", label: t("Turno", "Round") },
+
+      { key: "White", label: t("Bianco", "White") },
+
+      { key: "Black", label: t("Nero", "Black") },
+
+    ];
+
+    return (
+
+      <div style={containerStyle}>
+
+        <div>
+
+          <div style={{ marginBottom: 4, fontSize: 12, fontWeight: 700, color: "#000" }}>
+
+            {t("Registratore PGN", "PGN Recorder")}
+
+          </div>
+
+          <div style={styles.recordedSummary}>{recordSummary}</div>
+
+        </div>
+
+
+
+        <div style={{ display: "grid", gap: 6 }}>
+
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>{commentHint}</div>
+
+          <textarea
+
+            style={{ ...styles.textarea, minHeight: 72, resize: "vertical" as const }}
+
+            value={activeCommentValue}
+
+            onChange={(e) => handleActiveCommentChange(e.target.value)}
+
+            placeholder={t("Scrivi il commento qui...", "Write your comment here...")}
+
+            disabled={commentDisabled}
+
+            spellCheck={false}
+
+          />
+
+          <div style={styles.recorderActions}>
+
+            <button
+
+              type="button"
+
+              onClick={clearActiveComment}
+
+              style={{
+
+                ...styles.btn,
+
+                ...(clearDisabled ? styles.btnDisabled : {}),
+
+                padding: "8px 12px",
+
+                fontSize: 12,
+
+              }}
+
+              disabled={clearDisabled}
+
+            >
+
+              {t("Rimuovi commento", "Clear comment")}
+
+            </button>
+
+          </div>
+
+        </div>
+
+
+
+        <div style={{ display: "grid", gap: 6 }}>
+
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>{t("Intestazioni PGN", "PGN headers")}</div>
+
+          <div
+
+            style={{
+
+              display: "grid",
+
+              gap: 8,
+
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+
+            }}
+
+          >
+
+            {headerFields.map((field) => (
+
+              <label key={field.key} style={{ display: "grid", gap: 4, fontSize: 12, color: "#374151" }}>
+
+                <span>{field.label}</span>
+
+                <input
+
+                  type="text"
+
+                  value={recordHeaders[field.key] ?? ""}
+
+                  onChange={(e) =>
+
+                    setRecordHeaders((prev) => ({
+
+                      ...prev,
+
+                      [field.key]: e.target.value,
+
+                    }))
+
+                  }
+
+                  style={styles.textInput}
+
+                  placeholder={field.label}
+
+                />
+
+              </label>
+
+            ))}
+
+            <label style={{ display: "grid", gap: 4, fontSize: 12, color: "#374151" }}>
+
+              <span>{t("Risultato", "Result")}</span>
+
+              <select
+
+                value={recordResult}
+
+                onChange={(e) => setRecordResult(e.target.value)}
+
+                style={styles.select}
+
+              >
+
+                <option value="*">*</option>
+
+                <option value="1-0">1-0</option>
+
+                <option value="0-1">0-1</option>
+
+                <option value="1/2-1/2">1/2-1/2</option>
+
+              </select>
+
+            </label>
+
+          </div>
+
+          <div style={styles.recorderActions}>
+
+            <button
+
+              type="button"
+
+              onClick={addRecordedGame}
+
+              style={
+
+                addDisabled
+
+                  ? { ...styles.btn, ...styles.btnDisabled, padding: "8px 14px" }
+
+                  : { ...styles.btn, ...styles.btnPrimary, padding: "8px 14px" }
+
+              }
+
+              disabled={addDisabled}
+
+            >
+
+              {t("Aggiungi partita", "Add game")}
+
+            </button>
+
+            <button
+
+              type="button"
+
+              onClick={resetRecordingForm}
+
+              style={{ ...styles.btn, padding: "8px 14px" }}
+
+            >
+
+              {t("Reset intestazioni", "Reset headers")}
+
+            </button>
+
+          </div>
+
+        </div>
+
+
+
+        <div>
+
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>
+
+            {t("Partite registrate", "Recorded games")}
+
+          </div>
+
+          {gamesSummary ? <div style={styles.recordedSummary}>{gamesSummary}</div> : null}
+
+          {recordedGames.length ? (
+
+            <div style={styles.recordedList}>
+
+              {recordedGames.map((game, idx) => {
+
+                const whiteName = (game.headers.White || "").trim() || t("Bianco", "White");
+
+                const blackName = (game.headers.Black || "").trim() || t("Nero", "Black");
+
+                const eventLabel = (game.headers.Event || "").trim() || t("Evento", "Event");
+
+                const subtitle = `${eventLabel}${game.result ? ` - ${game.result}` : ""}`;
+
+                return (
+
+                  <div key={game.id} style={styles.recordedRow}>
+
+                    <div style={{ display: "grid", gap: 2 }}>
+
+                      <div style={{ fontWeight: 600 }}>{`#${idx + 1} ${whiteName} vs ${blackName}`}</div>
+
+                      <div style={{ fontSize: 11, color: "#6b7280" }}>{subtitle}</div>
+
+                    </div>
+
+                    <button
+
+                      type="button"
+
+                      onClick={() => removeRecordedGame(game.id)}
+
+                      style={{ ...styles.btn, ...styles.btnToggleOff, padding: "6px 10px", fontSize: 11 }}
+
+                      title={t("Elimina questa partita", "Remove this game")}
+
+                    >
+
+                      {t("Rimuovi", "Remove")}
+
+                    </button>
+
+                  </div>
+
+                );
+
+              })}
+
+            </div>
+
+          ) : (
+
+            <div style={{ ...styles.recordedSummary, fontStyle: "italic" }}>
+
+              {t("Nessuna partita registrata finora.", "No recorded games yet.")}
+
+            </div>
+
+          )}
+
+        </div>
+
+
+
+        <div style={{ display: "grid", gap: 6 }}>
+
+          <div style={styles.recordedSummary}>
+
+            {t("Le partite aggiunte appariranno nella trascrizione qui sotto. Salvale per ottenere un file .pgn.", "Games you add will be listed in the transcript below. Save to download a .pgn file.")}
+
+          </div>
+
+          <textarea
+
+            style={{ ...styles.textarea, minHeight: 120 }}
+
+            value={aggregatedRecordedPgn}
+
+            readOnly
+
+            placeholder={t("Le partite registrate appariranno qui.", "Recorded games will appear here.")}
+
+            spellCheck={false}
+
+          />
+
+          <button
+
+            type="button"
+
+            onClick={downloadRecordedPgn}
+
+            style={
+
+              saveDisabled
+
+                ? { ...styles.btn, ...styles.btnDisabled, padding: "10px 16px", fontWeight: 700 }
+
+                : { ...styles.btn, ...styles.btnPrimary, padding: "10px 16px", fontWeight: 700 }
+
+            }
+
+            disabled={saveDisabled}
+
+          >
+
+            {t("Salva PGN", "Save PGN")}
+
+          </button>
+
+        </div>
+
+      </div>
+
+    );
+
+  };
+
+
+
   if (isMobile) {
 
     const fileInputId = "pgn-file-mobile";
@@ -5250,7 +6051,7 @@ export default function App() {
 
 
 
-    const pgnContent = (
+    const pgnTabContent = (
 
       <div style={{ display: "grid", gap: 12 }}>
 
@@ -5379,6 +6180,8 @@ export default function App() {
       </div>
 
     );
+
+    const pgnContent = recorderOpen ? renderRecorder("mobile") : pgnTabContent;
 
 
 
@@ -5714,6 +6517,32 @@ export default function App() {
 
               </button>
 
+              <button
+
+                onClick={() => {
+
+                  setRecorderOpen((open) => {
+
+                    const next = !open;
+
+                    if (next) setMobileTab("pgn");
+
+                    return next;
+
+                  });
+
+                }}
+
+                style={recorderOpen ? styles.mAccentButton : styles.mFileButton}
+
+                title={recorderOpen ? t("Chiudi il registratore PGN", "Close the PGN recorder") : t("Apri il registratore PGN", "Open the PGN recorder")}
+
+              >
+
+                {recorderOpen ? t("Chiudi Recorder", "Close Recorder") : t("PGN Recorder", "PGN Recorder")}
+
+              </button>
+
             </div>
 
           <div style={styles.mHeaderActions}>
@@ -5725,9 +6554,7 @@ export default function App() {
               style={styles.mFileButton}
 
               title={t("Cambia lingua", "Toggle language")}
-
             >
-
               Lang {language.toUpperCase()}
 
             </button>
@@ -6308,6 +7135,20 @@ export default function App() {
 
             </button>
 
+            <button
+
+              onClick={() => setRecorderOpen((open) => !open)}
+
+              style={{ ...styles.btn, ...(recorderOpen ? styles.btnToggleOn : {}) }}
+
+              title={recorderOpen ? t("Chiudi il registratore PGN", "Close the PGN recorder") : t("Apri il registratore PGN", "Open the PGN recorder")}
+
+            >
+
+              {recorderOpen ? t("Chiudi Recorder", "Close Recorder") : t("PGN Recorder", "PGN Recorder")}
+
+            </button>
+
 
 
 
@@ -6418,7 +7259,7 @@ export default function App() {
 
             >
 
-              🌐 {language.toUpperCase()}
+              {t("Lingua", "Lang")} {language.toUpperCase()}
 
             </button>
 
@@ -6701,6 +7542,8 @@ export default function App() {
             </div>
 
           </div>
+
+
 
         </div>
 
@@ -7050,7 +7893,11 @@ export default function App() {
 
           <div style={styles.right} ref={movesPaneRef}>
 
-            {!treeMain ? (
+            {recorderOpen ? (
+
+              renderRecorder("panel")
+
+            ) : !treeMain ? (
 
               <div style={{ fontSize: 12, color: "#6b7280" }}>
 
