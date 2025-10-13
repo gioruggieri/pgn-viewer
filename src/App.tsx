@@ -1,4 +1,4 @@
-﻿// @ts-nocheck
+// @ts-nocheck
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -50,7 +50,7 @@ function detectMobile() {
 
 /* =====================================================
 
-   PGN utilities â€” robust tokenizer + game-tree parser
+   PGN utilities — robust tokenizer + game-tree parser
 
    (== invariati dal tuo file, salvo piccole aggiunte in fondo)
 
@@ -86,7 +86,7 @@ function parseHeaders(pgn: string) {
 
 
 
-/** CompatibilitÃ  con marcatori esterni + pulizia detriti engine */
+/** Compatibilità con marcatori esterni + pulizia detriti engine */
 
 function preprocessExternalMarkers(pgnText: string) {
 
@@ -222,7 +222,7 @@ function tokenizeMovetext(raw: string) {
 
   const s = stripSemicolonComments(raw);
 
-  const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.|â€¦)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
+  const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.|…)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
 
   const tokens: Array<{ t: string; v: string }> = [];
 
@@ -236,7 +236,7 @@ function tokenizeMovetext(raw: string) {
 
     else if (tok[0] === "$") tokens.push({ t: TT.NAG, v: tok });
 
-    else if (/^\d+\.(?:\.\.|â€¦)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
+    else if (/^\d+\.(?:\.\.|…)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
 
     else if (tok === "(") tokens.push({ t: TT.RAV_START, v: tok });
 
@@ -444,7 +444,7 @@ function parseMovetextToTree(moveText: string, startFen?: string): { main: Line;
 
         if (j < tokens.length && tokens[j].t === TT.MOVE_NUM && lastNode) {
 
-          const wantsBlack = /â€¦|\.\.\.$/.test(tokens[j].v);
+          const wantsBlack = /…|\.\.\.$/.test(tokens[j].v);
 
           const desired: "w" | "b" = wantsBlack ? "b" : "w";
 
@@ -1410,7 +1410,13 @@ export default function App() {
 
   const [games, setGames] = useState<string[]>([]);
 
+  const gameIndexRef = useRef(0);
+  const randomPickBusyRef = useRef(false);
   const [gameIndex, setGameIndex] = useState(0);
+
+  useEffect(() => {
+    gameIndexRef.current = gameIndex;
+  }, [gameIndex]);
 
   const [headers, setHeaders] = useState<Record<string, string>>({});
 
@@ -1711,12 +1717,78 @@ export default function App() {
   const [training, setTraining] = useState(false);
 
   const [trainingColor, setTrainingColor] = useState('auto');
+  const [trainingRandomGame, setTrainingRandomGame] = useState(false);
+  const pickRandomTrainingGame = useCallback(() => {
+    if (!games.length || randomPickBusyRef.current) return;
+
+    randomPickBusyRef.current = true;
+
+    const prevIndex = gameIndexRef.current;
+
+    let nextIndex = prevIndex;
+
+    if (games.length === 1) {
+
+      nextIndex = 0;
+
+    } else {
+
+      nextIndex = Math.floor(Math.random() * games.length);
+
+      if (nextIndex === prevIndex) {
+
+        nextIndex = (nextIndex + 1 + Math.floor(Math.random() * (games.length - 1))) % games.length;
+
+      }
+
+    }
+
+    gameIndexRef.current = nextIndex;
+
+    setGameIndex(nextIndex);
+
+    randomPickBusyRef.current = false;
+
+  }, [games]);
+  const [trainingShowTranscript, setTrainingShowTranscript] = useState(false);
 
   const [feedback, setFeedback] = useState<null | { ok: boolean; text: string }>(null);
 
   const feedbackTimer = useRef<any>(null);
+  const prevTrainingRef = useRef(training);
+  const prevTrainingRandomRef = useRef(trainingRandomGame);
 
   useEffect(() => () => { if (feedbackTimer.current) clearTimeout(feedbackTimer.current); }, []);
+
+  useEffect(() => {
+    if (training && !prevTrainingRef.current) {
+      if (trainingRandomGame) {
+        pickRandomTrainingGame();
+        setTrainingShowTranscript(false);
+      }
+    } else if (!training) {
+      setTrainingShowTranscript(false);
+    }
+    prevTrainingRef.current = training;
+  }, [training, trainingRandomGame, pickRandomTrainingGame]);
+
+  useEffect(() => {
+    if (training && trainingRandomGame && !prevTrainingRandomRef.current) {
+      pickRandomTrainingGame();
+      setTrainingShowTranscript(false);
+    }
+    if (!trainingRandomGame) {
+      setTrainingShowTranscript(false);
+    }
+    prevTrainingRandomRef.current = trainingRandomGame;
+  }, [trainingRandomGame, training, pickRandomTrainingGame]);
+
+  useEffect(() => {
+    if (!training || !trainingRandomGame) return;
+    if (!games.length) return;
+    pickRandomTrainingGame();
+    setTrainingShowTranscript(false);
+  }, [games, training, trainingRandomGame, pickRandomTrainingGame]);
 
 
 
@@ -2142,6 +2214,7 @@ export default function App() {
 
 
 
+
   const goPrevGame = () => {
 
     if (gameIndex <= 0) return;
@@ -2464,7 +2537,7 @@ export default function App() {
 
   
 
-  // === VS Engine: trigger analisi solo quando Ã¨ il turno del motore e serve ===
+  // === VS Engine: trigger analisi solo quando è il turno del motore e serve ===
 
   useEffect(() => {
 
@@ -2494,7 +2567,7 @@ export default function App() {
 
 
 
-  // === VS Engine: quando l'analisi Ã¨ pronta, gioca una sola mossa (pvSan[0]) ===
+  // === VS Engine: quando l'analisi è pronta, gioca una sola mossa (pvSan[0]) ===
 
   useEffect(() => {
 
@@ -2758,7 +2831,7 @@ export default function App() {
 
   if (engineOn && thinking) statusExtras.push("engine...");
 
-  const statusLine = `Posizione ${step}/${Math.max(0, fenHistory.length - 1)}${statusExtras.length ? " — " + statusExtras.join(" — ") : ""}`;
+  const statusLine = `Posizione ${step}/${Math.max(0, fenHistory.length - 1)}${statusExtras.length ? " - " + statusExtras.join(" - ") : ""}`;
 
 
 
@@ -2964,9 +3037,9 @@ export default function App() {
 
       >
 
-        {checkmatedColor === "w" ? "â™”" : "â™š"}
+        {checkmatedColor === "w" ? "♔" : "♚"}
 
-        <span style={{ fontSize: squareWidth * 0.45, marginLeft: 2 }}>â˜ </span>
+        <span style={{ fontSize: squareWidth * 0.45, marginLeft: 2 }}>☠</span>
 
       </div>
 
@@ -3140,7 +3213,7 @@ export default function App() {
 
 
 
-    // Se abbiamo giÃ  selezionato un pezzo e clicchiamo su una casella di destinazione
+    // Se abbiamo già selezionato un pezzo e clicchiamo su una casella di destinazione
 
     // square clicked to move to, check if valid move
 
@@ -3488,7 +3561,7 @@ export default function App() {
 
       const humanSide = engineSide === 'w' ? 'b' : 'w';
 
-      if (chess.turn() !== humanSide) { flash(false, 'È il turno del motore.'); return false; }
+      if (chess.turn() !== humanSide) { flash(false, "E' il turno del motore."); return false; }
 
     }
 
@@ -3552,7 +3625,7 @@ export default function App() {
 
           flash(false, "Mossa sbagliata, riprova.");
 
-          // Blunder helper: se il motore è acceso e abbiamo la best line, mostra freccia per pochi secondi
+          // Blunder helper: se il motore e' acceso e abbiamo la best line, mostra freccia per pochi secondi
 
           if (engineOn) {
 
@@ -3732,7 +3805,7 @@ export default function App() {
 
     const black = hdrs.Black || "Nero";
 
-    const event = hdrs.Event ? ` â€” ${hdrs.Event}` : "";
+    const event = hdrs.Event ? ` — ${hdrs.Event}` : "";
 
     const result = hdrs.Result ? ` (${hdrs.Result})` : "";
 
@@ -3960,7 +4033,7 @@ export default function App() {
 
     }
 
-    if (line.nodes.length > maxPlies) parts.push("â€¦");
+    if (line.nodes.length > maxPlies) parts.push("…");
 
     return parts.join(" ");
 
@@ -4479,6 +4552,8 @@ export default function App() {
 
   }, [treeMain, activeNodeId, fenHistory, step, variantView, openVars, openLines]);
 
+  const transcriptHidden = training && trainingRandomGame && !trainingShowTranscript;
+
 
 
   /* ---------------- Tastiera ---------------- */
@@ -4949,6 +5024,32 @@ export default function App() {
 
           </div>
 
+        ) : transcriptHidden ? (
+
+          <div style={{ display: "grid", gap: 8 }}>
+
+            <div style={styles.mInfoText}>
+
+              {t("Trascrizione PGN nascosta durante l'allenamento casuale.", "PGN transcript hidden during random training.")}
+
+            </div>
+
+            <button
+
+              type="button"
+
+              style={styles.mAccentButton}
+
+              onClick={() => setTrainingShowTranscript(true)}
+
+            >
+
+              {t("Mostra trascrizione", "Show transcript")}
+
+            </button>
+
+          </div>
+
         ) : (
 
           <div style={{ ...styles.flow, maxHeight: "45vh", overflowY: "auto" }}>
@@ -5387,6 +5488,84 @@ export default function App() {
 
             </div>
 
+            <div style={styles.mChipRow}>
+
+              <button
+
+                onClick={() => {
+
+                  if (!games.length) return;
+
+                  if (trainingRandomGame) {
+
+                    pickRandomTrainingGame();
+
+                  } else {
+
+                    setTrainingRandomGame(true);
+
+                  }
+
+                }}
+
+                style={chipStyle({ active: trainingRandomGame, disabled: !games.length })}
+
+                disabled={!games.length}
+
+                title={t("Seleziona automaticamente una partita casuale al via dell'allenamento", "Pick a random game when training starts")}
+
+              >
+
+                {trainingRandomGame ? t("Nuova casuale", "Pick another") : t("Partita casuale", "Random game")}
+
+              </button>
+
+              {trainingRandomGame ? (
+
+                <button
+
+                  onClick={() => setTrainingRandomGame(false)}
+
+                  style={chipStyle()}
+
+                  title={t("Disattiva la selezione casuale", "Disable random selection")}
+
+                >
+
+                  {t("Disattiva casuale", "Disable random")}
+
+                </button>
+
+              ) : null}
+
+              {trainingRandomGame ? (
+
+                <button
+
+                  onClick={() => setTrainingShowTranscript((v) => !v)}
+
+                  style={chipStyle({ active: trainingShowTranscript })}
+
+                  title={trainingShowTranscript
+
+                    ? t("Nascondi la trascrizione PGN mentre ti alleni", "Hide the PGN transcript while training")
+
+                    : t("Mostra la trascrizione PGN", "Show the PGN transcript")}
+
+                >
+
+                  {trainingShowTranscript
+
+                    ? t("Nascondi trascrizione", "Hide transcript")
+
+                    : t("Mostra trascrizione", "Show transcript")}
+
+                </button>
+
+              ) : null}
+
+            </div>
+
           </div>
 
         ) : null}
@@ -5549,7 +5728,7 @@ export default function App() {
 
             >
 
-              🌐 {language.toUpperCase()}
+              Lang {language.toUpperCase()}
 
             </button>
 
@@ -6015,6 +6194,94 @@ export default function App() {
 
                 </button>
 
+                <button
+
+                  onClick={() => {
+
+                    if (!games.length) return;
+
+                    if (trainingRandomGame) {
+
+                      pickRandomTrainingGame();
+
+                    } else {
+
+                      setTrainingRandomGame(true);
+
+                    }
+
+                  }}
+
+                  style={{
+
+                    ...styles.btn,
+
+                    ...(trainingRandomGame ? styles.btnToggleOn : styles.btnToggleOff),
+
+                    ...(!games.length ? styles.btnDisabled : {}),
+
+                  }}
+
+                  disabled={!games.length}
+
+                  title={t("Seleziona automaticamente una partita casuale al via dell'allenamento", "Pick a random game when training starts")}
+
+                >
+
+                  {trainingRandomGame ? t("Nuova casuale", "Pick another") : t("Partita casuale", "Random game")}
+
+                </button>
+
+                {trainingRandomGame ? (
+
+                  <button
+
+                    onClick={() => setTrainingRandomGame(false)}
+
+                    style={{ ...styles.btn, ...styles.btnToggleOff }}
+
+                    title={t("Disattiva la selezione casuale", "Disable random selection")}
+
+                  >
+
+                    {t("Disattiva casuale", "Disable random")}
+
+                  </button>
+
+                ) : null}
+
+                {trainingRandomGame ? (
+
+                  <button
+
+                    onClick={() => setTrainingShowTranscript((v) => !v)}
+
+                    style={{
+
+                      ...styles.btn,
+
+                      ...(trainingShowTranscript ? styles.btnToggleOn : styles.btnToggleOff),
+
+                    }}
+
+                    title={trainingShowTranscript
+
+                      ? t("Nascondi la trascrizione PGN mentre ti alleni", "Hide the PGN transcript while training")
+
+                      : t("Mostra la trascrizione PGN", "Show the PGN transcript")}
+
+                  >
+
+                    {trainingShowTranscript
+
+                      ? t("Nascondi trascrizione", "Hide transcript")
+
+                      : t("Mostra trascrizione", "Show transcript")}
+
+                  </button>
+
+                ) : null}
+
               </>
 
             ) : null}
@@ -6053,7 +6320,7 @@ export default function App() {
 
               style={styles.btn}
 
-              title={t("Cambia modalità di visualizzazione delle varianti", "Change variation display mode")}
+              title={t("Cambia modalita di visualizzazione delle varianti", "Change variation display mode")}
 
             >
 
@@ -6155,7 +6422,7 @@ export default function App() {
 
             </button>
 
-
+              Lang {language.toUpperCase()}
 
             <div style={styles.engineRow}>
 
@@ -6449,7 +6716,7 @@ export default function App() {
 
             <div style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 8 }}>
 
-              {/* Eval Bar (vantaggio White; per Nero Ã¨ complementare) */}
+              {/* Eval Bar (vantaggio White; per Nero è complementare) */}
 
               <div style={{ height: boardRenderWidth }}>
 
@@ -6791,6 +7058,28 @@ export default function App() {
 
               </div>
 
+            ) : transcriptHidden ? (
+
+              <div style={{ display: "grid", gap: 12, fontSize: 13, color: "#4b5563" }}>
+
+                <div>{t("Trascrizione PGN nascosta durante l'allenamento casuale.", "PGN transcript hidden during random training.")}</div>
+
+                <button
+
+                  type="button"
+
+                  style={{ ...styles.btn, ...styles.btnPrimary, alignSelf: "start" }}
+
+                  onClick={() => setTrainingShowTranscript(true)}
+
+                >
+
+                  {t("Mostra trascrizione", "Show transcript")}
+
+                </button>
+
+              </div>
+
             ) : (
 
               <div style={styles.flow}>{flow}</div>
@@ -6880,6 +7169,49 @@ export default function App() {
   );
 
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
