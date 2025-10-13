@@ -361,6 +361,7 @@ type VariationInternal = {
   startStep: number;
   startFen: string;
   sanMoves: string[];
+  comments: string[];
   fenList: string[];
   chess: Chess;
 };
@@ -369,6 +370,7 @@ type VariationState = {
   anchorIndex: number;
   startFen: string;
   sanMoves: string[];
+  comments: string[];
   currentFen: string;
 };
 
@@ -460,7 +462,7 @@ function recordedGamesToPgn(games: RecordedGame[]) {
 }
 
 
-function formatVariationSan(startFen: string, sanMoves: string[]) {
+function formatVariationSan(startFen: string, sanMoves: string[], comments?: (string | null | undefined)[]) {
   if (!sanMoves.length) return "";
   const tokens: string[] = [];
   const parts = startFen.split(" ");
@@ -468,17 +470,20 @@ function formatVariationSan(startFen: string, sanMoves: string[]) {
   let currentColor = sideToMove;
   let moveNumber = parseInt(parts[5], 10);
   if (!Number.isFinite(moveNumber)) moveNumber = 1;
-  sanMoves.forEach((sanRaw) => {
+  sanMoves.forEach((sanRaw, idx) => {
     const san = String(sanRaw || "").trim();
     if (!san) return;
+    const commentRaw = comments ? comments[idx] ?? "" : "";
+    const commentClean = commentRaw ? sanitizePgnComment(commentRaw) : "";
+    const commentSuffix = commentClean ? ` {${commentClean}}` : "";
     if (currentColor === "w") {
-      tokens.push(`${moveNumber}. ${san}`);
+      tokens.push(`${moveNumber}. ${san}${commentSuffix}`);
       currentColor = "b";
     } else {
       if (tokens.length && !tokens[tokens.length - 1].includes("...")) {
-        tokens[tokens.length - 1] = `${tokens[tokens.length - 1]} ${san}`;
+        tokens[tokens.length - 1] = `${tokens[tokens.length - 1]} ${san}${commentSuffix}`;
       } else {
-        tokens.push(`${moveNumber}... ${san}`);
+        tokens.push(`${moveNumber}... ${san}${commentSuffix}`);
       }
       moveNumber += 1;
       currentColor = "w";
@@ -1799,6 +1804,10 @@ export default function App() {
   const [variationDraft, setVariationDraft] = useState("");
   const variationSessionRef = useRef<VariationInternal | null>(null);
   const [variationSession, setVariationSession] = useState<VariationState | null>(null);
+  const [variationEditIndex, setVariationEditIndex] = useState<number | null>(null);
+  const [moveFrom, setMoveFrom] = useState('');
+  const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
+  const variationDraftRef = useRef("");
 
   const clearVariationSession = useCallback(() => {
 
@@ -1807,6 +1816,7 @@ export default function App() {
     setVariationSession(null);
 
     setVariationDraft("");
+    setVariationEditIndex(null);
 
   }, []);
 
@@ -1856,6 +1866,27 @@ export default function App() {
     return `${prefix} ${activeRecordedMove.san}`;
 
   }, [activeRecordedMove]);
+
+  useEffect(() => {
+    setVariationEditIndex(null);
+    setVariationDraft("");
+  }, [activeFenIndex]);
+
+  useEffect(() => {
+    variationDraftRef.current = variationDraft;
+    const session = variationSessionRef.current;
+    if (session && session.sanMoves.length) {
+      const idx = session.sanMoves.length - 1;
+      session.comments[idx] = variationDraft;
+      setVariationSession({
+        anchorIndex: session.anchorIndex,
+        startFen: session.startFen,
+        sanMoves: [...session.sanMoves],
+        comments: [...session.comments],
+        currentFen: session.fenList[session.fenList.length - 1] ?? session.startFen,
+      });
+    }
+  }, [variationDraft]);
 
 
 
@@ -3110,6 +3141,8 @@ export default function App() {
 
       sanMoves: [],
 
+      comments: [],
+
       fenList: [startFen],
 
       chess: new Chess(startFen),
@@ -3117,8 +3150,9 @@ export default function App() {
     };
 
     variationSessionRef.current = session;
-    setVariationSession({ anchorIndex, startFen, sanMoves: [], currentFen: startFen });
+    setVariationSession({ anchorIndex, startFen, sanMoves: [], comments: [], currentFen: startFen });
     setVariationDraft("");
+    setVariationEditIndex(null);
     flash(true, t("Registrazione variante attiva: effettua mosse sulla scacchiera.", "Variation recording active: play moves on the board."));
 
     setMoveFrom("");
@@ -3136,11 +3170,17 @@ export default function App() {
 
     if (!session) return;
 
+    const lastIndex = session.sanMoves.length - 1;
+    if (lastIndex >= 0) {
+      session.comments[lastIndex] = variationDraftRef.current;
+    }
+
     variationSessionRef.current = null;
 
     setVariationSession(null);
 
     setVariationDraft("");
+    setVariationEditIndex(null);
 
     setMoveFrom("");
 
@@ -3156,19 +3196,19 @@ export default function App() {
 
     if (commit) {
 
-      if (!session.sanMoves.length) {
+      const anchorIndex = session.anchorIndex;
 
-      if (session.anchorIndex < 0 || session.anchorIndex >= playedMoves.length) {
+      if (anchorIndex < 0 || anchorIndex >= playedMoves.length) {
         flash(false, t("Impossibile associare la variante alla mossa selezionata.", "Unable to attach the variation to the selected move."));
         return;
       }
+
+      if (!session.sanMoves.length) {
         flash(false, t("Nessuna mossa registrata per la variante.", "No moves recorded for the variation."));
-
         return;
-
       }
 
-      const variationSan = formatVariationSan(session.startFen, session.sanMoves);
+      const variationSan = formatVariationSan(session.startFen, session.sanMoves, session.comments);
 
       if (!variationSan) {
 
@@ -3182,7 +3222,7 @@ export default function App() {
 
         prev.map((mv, idx) => {
 
-          if (idx !== session.anchorIndex) return mv;
+          if (idx !== anchorIndex) return mv;
 
           const existing = mv.variations ? mv.variations.slice() : [];
 
@@ -3204,42 +3244,98 @@ export default function App() {
 
   }, [fenHistory, flash, playedMoves, setStep, setPlayedMoves, setMoveFrom, setOptionSquares, setShowBestOnce, t]);
 
-  const addVariationToActive = useCallback(() => {
+  const startVariationRecording = useCallback(() => {
+    if (variationSessionRef.current) {
+      flash(false, t("Termina la variante in corso prima di iniziarne una nuova.", "Finish the current variation before starting a new one."));
+      return;
+    }
 
+    ensureVariationSession();
+  }, [ensureVariationSession, flash, t]);
+
+  const beginEditVariation = useCallback((index: number, value: string) => {
+    setVariationEditIndex(index);
+    setVariationDraft(value.trim());
+  }, []);
+
+  const cancelVariationEdit = useCallback(() => {
+    setVariationEditIndex(null);
+    setVariationDraft("");
+  }, []);
+
+  const addVariationToActive = useCallback(() => {
     const text = variationDraft.trim();
 
     if (!text) {
-
       flash(false, t("Inserisci una variante prima di aggiungerla.", "Enter a variation before adding it."));
-
       return;
-
     }
 
     if (activeFenIndex == null) {
-
       flash(false, t("Seleziona una mossa per collegare la variante.", "Select a move to attach the variation to."));
-
       return;
-
     }
 
     const sanitized = text.replace(/^\(([\s\S]*)\)$/u, "$1").trim();
 
     if (!sanitized) {
-
-      flash(false, t("La variante non può essere vuota.", "Variation cannot be empty."));
-
+      flash(false, t("La variante non pu? essere vuota.", "Variation cannot be empty."));
       return;
+    }
 
+    if (variationEditIndex != null) {
+      let updated = false;
+      let duplicate = false;
+      let missing = false;
+
+      setPlayedMoves((prev) =>
+        prev.map((mv) => {
+          if (mv.fenIndex !== activeFenIndex) return mv;
+
+          const current = mv.variations ? mv.variations.slice() : [];
+          const idx = variationEditIndex;
+
+          if (idx < 0 || idx >= current.length) {
+            missing = true;
+            return mv;
+          }
+
+          if (current.some((v, i) => i !== idx && v.trim() === sanitized)) {
+            duplicate = true;
+            return mv;
+          }
+
+          if (current[idx]?.trim() === sanitized) {
+            updated = true;
+            return mv;
+          }
+
+          current[idx] = sanitized;
+          updated = true;
+          return { ...mv, variations: current };
+        })
+      );
+
+      if (duplicate) {
+        flash(false, t("Questa variante ? gi? presente.", "This variation is already present."));
+        return;
+      }
+
+      if (!updated || missing) {
+        flash(false, t("Impossibile aggiornare la variante selezionata.", "Unable to update the selected variation."));
+        return;
+      }
+
+      setVariationDraft("");
+      setVariationEditIndex(null);
+      flash(true, t("Variante aggiornata.", "Variation updated."));
+      return;
     }
 
     let added = false;
 
     setPlayedMoves((prev) =>
-
       prev.map((mv) => {
-
         if (mv.fenIndex !== activeFenIndex) return mv;
 
         const current = mv.variations ? mv.variations.slice() : [];
@@ -3249,37 +3345,27 @@ export default function App() {
         added = true;
 
         return { ...mv, variations: [...current, sanitized] };
-
       })
-
     );
 
     if (!added) {
-
-      flash(false, t("Questa variante è già presente.", "This variation is already present."));
-
+      flash(false, t("Questa variante ? gi? presente.", "This variation is already present."));
       return;
-
     }
 
     setVariationDraft("");
-
     flash(true, t("Variante aggiunta.", "Variation added."));
+  }, [variationDraft, activeFenIndex, variationEditIndex, flash, t]);
 
-  }, [variationDraft, activeFenIndex, flash, t]);
 
   const removeVariationFromActive = useCallback(
-
     (index: number) => {
-
       if (activeFenIndex == null) return;
 
       let removed = false;
 
       setPlayedMoves((prev) =>
-
         prev.map((mv) => {
-
           if (mv.fenIndex !== activeFenIndex) return mv;
 
           const current = mv.variations ? mv.variations.slice() : [];
@@ -3291,25 +3377,22 @@ export default function App() {
           removed = true;
 
           return { ...mv, variations: current.length ? current : undefined };
-
         })
-
       );
 
       if (!removed) {
-
         flash(false, t("Impossibile rimuovere la variante selezionata.", "Unable to remove the selected variation."));
-
         return;
+      }
 
+      if (variationEditIndex != null) {
+        setVariationEditIndex(null);
+        setVariationDraft("");
       }
 
       flash(true, t("Variante rimossa.", "Variation removed."));
-
     },
-
-    [activeFenIndex, flash, t]
-
+    [activeFenIndex, variationEditIndex, flash, t]
   );
 
   const beginEditRecordedGame = useCallback(
@@ -3841,12 +3924,6 @@ export default function App() {
 
 
 
-
-  // === Click and Move functionality ===
-
-  const [moveFrom, setMoveFrom] = useState('');
-
-  const [optionSquares, setOptionSquares] = useState<Record<string, React.CSSProperties>>({});
 
   const [premoves, setPremoves] = useState<PremoveEntry[]>([]);
   const premovesRef = useRef<PremoveEntry[]>([]);
@@ -4414,13 +4491,7 @@ export default function App() {
 
     if (sourceSquare === targetSquare) return false;
 
-    let session = variationSessionRef.current;
-    if (!session && stepRef.current < playedMoves.length) {
-      if (playedMoves.some((mv) => mv.fenIndex === stepRef.current)) {
-        session = ensureVariationSession() ?? null;
-      }
-    }
-
+    const session = variationSessionRef.current;
     const inVariant = !!session;
 
     const baseFen = inVariant
@@ -4679,22 +4750,25 @@ export default function App() {
 
     if (inVariant) {
 
-      session!.sanMoves.push(move.san);
+      const lastIdx = session!.sanMoves.length - 1;
 
+      if (lastIdx >= 0) {
+        session!.comments[lastIdx] = variationDraftRef.current;
+      }
+
+      session!.sanMoves.push(move.san);
+      session!.comments.push("");
       session!.fenList.push(newFen);
 
       setVariationSession({
-
         anchorIndex: session!.anchorIndex,
-
         startFen: session!.startFen,
-
         sanMoves: [...session!.sanMoves],
-
+        comments: [...session!.comments],
         currentFen: newFen,
-
       });
 
+      setVariationDraft("");
       chessGameRef.current = new Chess(newFen);
 
       setMoveFrom('');
@@ -5725,7 +5799,9 @@ export default function App() {
 
     const commentDisabled = !activeRecordedMove;
 
-    const clearDisabled = commentDisabled || variationActive || !activeCommentValue.trim();
+    const commentFieldDisabled = commentDisabled;
+
+    const clearDisabled = commentDisabled || !activeCommentValue.trim();
 
     const saveDisabled = recordedGames.length === 0;
 
@@ -5747,13 +5823,35 @@ export default function App() {
 
       : t("Seleziona una mossa dall'elenco per aggiungere un commento.", "Select a move from the list to add a comment.");
 
+    const commentTextareaPlaceholder = commentFieldDisabled
+      ? commentHint
+      : t("Aggiungi un commento (puoi usare testo libero e notazione PGN).", "Add a comment (free text and PGN notation supported).");
+
     const variationAnchorMove = variationSession ? playedMoves[variationSession.anchorIndex] : null;
 
     const variationAnchorMatchesActive = variationSession
       ? (variationAnchorMove?.fenIndex ?? null) === activeFenIndex
       : false;
-    const variationPreviewSan = variationSession ? formatVariationSan(variationSession.startFen, variationSession.sanMoves) : "";
-    const manualVariationDisabled = commentDisabled || variationActive;
+    const variationPreviewSan = variationSession ? formatVariationSan(variationSession.startFen, variationSession.sanMoves, variationSession.comments) : "";
+    const variationEditing = variationEditIndex != null;
+    const variationSessionActive = !!variationSession;
+    const variationTextareaDisabled = commentDisabled;
+    const variationListDisabled = commentDisabled || variationSessionActive;
+    const variationActionDisabled = commentDisabled || variationSessionActive;
+    const boardVariationDisabled = commentDisabled || training || playVsEngine || variationEditing;
+    const boardVariationTooltip = variationEditing
+      ? t("Termina la modifica della variante corrente prima di registrare dalla scacchiera.", "Finish editing the current variation before recording from the board.")
+      : training || playVsEngine
+        ? t("Disattiva il training o il motore per registrare una variante.", "Disable training or the engine to record a variation.")
+        : commentDisabled
+          ? t("Seleziona la mossa a cui aggiungere la variante.", "Select the move you want to annotate with a variation.")
+          : "";
+    const variationActionLabel = variationEditing ? t("Salva variante", "Save variation") : t("Aggiungi variante", "Add variation");
+    const variationTextareaPlaceholder = variationSessionActive
+      ? t("Scrivi un commento da allegare alla variante in corso (verrà aggiunto al termine).", "Write a comment to attach to the ongoing variation (it will be added on finish).")
+      : variationEditing
+        ? t("Modifica la variante esistente o aggiungi commenti, poi salva.", "Edit the existing variation or add comments, then save.")
+        : t("Inserisci la variante in notazione PGN, es. 12...g6 13.Nc3", "Enter the variation in PGN notation, e.g. 12...g6 13.Nc3");
 
     const gamesSummary = recordedGames.length
 
@@ -5822,15 +5920,13 @@ export default function App() {
 
             style={{ ...styles.textarea, minHeight: 60, resize: "vertical" as const }}
 
-            value={variationDraft}
+            value={activeCommentValue}
 
-            onChange={(e) => setVariationDraft(e.target.value)}
+            onChange={(e) => handleActiveCommentChange(e.target.value)}
 
-            placeholder={variationActive
-              ? t("Termina la registrazione della variante sulla scacchiera per usare questo campo.", "Finish the board variation recording before using this field.")
-              : t("Inserisci la variante in notazione PGN, es. 12...g6 13.Nc3", "Enter the variation in PGN notation, e.g. 12...g6 13.Nc3")}
+            placeholder={commentTextareaPlaceholder}
 
-            disabled={manualVariationDisabled}
+            disabled={commentFieldDisabled}
 
             spellCheck={false}
 
@@ -5876,21 +5972,43 @@ export default function App() {
 
           {activeVariations.length ? (
             <div style={styles.variationList}>
-              {activeVariations.map((variation, idx) => (
-                <div key={`var-${activeFenIndex ?? "none"}-${idx}`} style={styles.variationItem}>
-                  <span style={styles.variationTag}>{idx + 1}</span>
-                  <span style={styles.variationText}>{variation}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeVariationFromActive(idx)}
-                    style={{ ...styles.btn, ...styles.btnToggleOff, padding: "4px 10px", fontSize: 11 }}
-                    title={t("Rimuovi questa variante", "Remove this variation")}
-                    disabled={activeFenIndex == null || manualVariationDisabled}
-                  >
-                    {t("Rimuovi", "Remove")}
-                  </button>
-                </div>
-              ))}
+              {activeVariations.map((variation, idx) => {
+                const isEditing = variationEditIndex === idx;
+                const itemStyle = isEditing
+                  ? { ...styles.variationItem, border: "1px solid #2563eb", background: "rgba(37, 99, 235, 0.08)" }
+                  : styles.variationItem;
+                return (
+                  <div key={`var-${activeFenIndex ?? "none"}-${idx}`} style={itemStyle}>
+                    <span style={styles.variationTag}>{idx + 1}</span>
+                    <span style={styles.variationText}>{variation}</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        type="button"
+                        onClick={() => beginEditVariation(idx, variation)}
+                        style={{
+                          ...styles.btn,
+                          ...(isEditing ? styles.btnPrimary : {}),
+                          padding: "4px 10px",
+                          fontSize: 11,
+                        }}
+                        title={t("Modifica questa variante", "Edit this variation")}
+                        disabled={variationListDisabled}
+                      >
+                        {isEditing ? t("In modifica", "Editing") : t("Modifica", "Edit")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeVariationFromActive(idx)}
+                        style={{ ...styles.btn, ...styles.btnToggleOff, padding: "4px 10px", fontSize: 11 }}
+                        title={t("Rimuovi questa variante", "Remove this variation")}
+                        disabled={activeFenIndex == null || variationListDisabled}
+                      >
+                        {t("Rimuovi", "Remove")}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div style={{ ...styles.recordedSummary, fontStyle: "italic" }}>
@@ -5899,6 +6017,31 @@ export default function App() {
                 : t("Nessuna variante per questa mossa.", "No variations for this move yet.")}
             </div>
           )}
+
+          {variationEditing ? (
+            <div style={{ ...styles.variationProgress, color: "#1d4ed8" }}>
+              {t('Modifica attiva: aggiorna il testo e premi "Salva variante" o "Annulla modifica".', 'Editing active: update the text then press "Save variation" or "Cancel edit".')}
+            </div>
+          ) : null}
+
+          {!variationSession ? (
+            <div style={styles.recorderActions}>
+              <button
+                type="button"
+                onClick={startVariationRecording}
+                style={{
+                  ...styles.btn,
+                  ...(boardVariationDisabled ? styles.btnDisabled : styles.btnPrimary),
+                  padding: "8px 12px",
+                  fontSize: 12,
+                }}
+                disabled={boardVariationDisabled}
+                title={boardVariationTooltip || undefined}
+              >
+                {t("Registra variante sulla scacchiera", "Record variation from the board")}
+              </button>
+            </div>
+          ) : null}
 
           {variationSession ? (
             variationAnchorMatchesActive ? (
@@ -5934,52 +6077,37 @@ export default function App() {
             </div>
           ) : null}
           <textarea
-
             style={{ ...styles.textarea, minHeight: 60, resize: "vertical" as const }}
-
             value={variationDraft}
-
             onChange={(e) => setVariationDraft(e.target.value)}
-
-            placeholder={variationActive
-              ? t("Termina la registrazione della variante sulla scacchiera per usare questo campo.", "Finish the board variation recording before using this field.")
-              : t("Inserisci la variante in notazione PGN, es. 12...g6 13.Nc3", "Enter the variation in PGN notation, e.g. 12...g6 13.Nc3")}
-
-            disabled={manualVariationDisabled}
-
+            placeholder={variationTextareaPlaceholder}
+            disabled={variationTextareaDisabled}
             spellCheck={false}
-
           />
 
-
-          <div style={styles.recorderActions}>
-
+          <div style={{ ...styles.recorderActions, gap: 8 }}>
             <button
-
               type="button"
-
               onClick={addVariationToActive}
-
               style={{
-
                 ...styles.btn,
-
-                ...(manualVariationDisabled ? styles.btnDisabled : styles.btnPrimary),
-
+                ...(variationActionDisabled ? styles.btnDisabled : styles.btnPrimary),
                 padding: "8px 12px",
-
                 fontSize: 12,
-
               }}
-
-              disabled={manualVariationDisabled}
-
+              disabled={variationActionDisabled}
             >
-
-              {t("Aggiungi variante", "Add variation")}
-
+              {variationActionLabel}
             </button>
-
+            {variationEditing ? (
+              <button
+                type="button"
+                onClick={cancelVariationEdit}
+                style={{ ...styles.btn, ...styles.btnToggleOff, padding: "8px 12px", fontSize: 12 }}
+              >
+                {t("Annulla modifica", "Cancel edit")}
+              </button>
+            ) : null}
           </div>
 
           <div style={{ fontSize: 11, color: "#6b7280" }}>
@@ -6078,14 +6206,6 @@ export default function App() {
             </label>
 
           </div>
-
-          <div style={styles.recorderActions}>
-
-            <button
-
-              type="button"
-
-              onClick={addRecordedGame}
 
           <div style={styles.recorderActions}>
 
@@ -8742,7 +8862,7 @@ export default function App() {
 
             }}
 
-
+          />
         </div>
 
       )}
@@ -8752,76 +8872,3 @@ export default function App() {
   );
 
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                style={{ ...styles.btn, ...(activeFenIndex == null || manualVariationDisabled ? styles.btnDisabled : styles.btnToggleOff), padding: "4px 10px", fontSize: 11 }}
