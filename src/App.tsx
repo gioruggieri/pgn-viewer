@@ -328,6 +328,8 @@ type PlayedMove = {
 
   comment?: string;
 
+  variations?: string[];
+
 };
 
 
@@ -349,9 +351,26 @@ type RecordedGame = {
   headers: Record<string, string>;
   moves: PlayedMove[];
   result: string;
+  startFen?: string;
 };
 
 const RECORD_HEADER_ORDER = ["Event", "Site", "Date", "Round", "White", "Black", "Result"];
+
+type VariationInternal = {
+  anchorIndex: number;
+  startStep: number;
+  startFen: string;
+  sanMoves: string[];
+  fenList: string[];
+  chess: Chess;
+};
+
+type VariationState = {
+  anchorIndex: number;
+  startFen: string;
+  sanMoves: string[];
+  currentFen: string;
+};
 
 function formatPgnDate(date: Date = new Date()) {
   const y = date.getFullYear();
@@ -382,12 +401,24 @@ function movesToMovetext(moves: PlayedMove[], result: string) {
   moves.forEach((move) => {
     const cleaned = move.comment ? sanitizePgnComment(move.comment) : "";
     const comment = cleaned ? ` {${cleaned}}` : "";
+    const variations = Array.isArray(move.variations) ? move.variations.filter((v) => !!v && !!String(v).trim()) : [];
+    const variationSuffix = variations
+      .map((raw) => {
+        const trimmed = String(raw || "").trim();
+        if (!trimmed) return "";
+        const withoutParens = trimmed.startsWith("(") && trimmed.endsWith(")")
+          ? trimmed.slice(1, -1).trim()
+          : trimmed;
+        return withoutParens ? ` (${withoutParens})` : "";
+      })
+      .join("");
+    const segment = `${move.san}${comment}${variationSuffix}`;
     if (move.color === "w") {
-      parts.push(`${move.moveNumber}. ${move.san}${comment}`);
+      parts.push(`${move.moveNumber}. ${segment}`);
     } else if (parts.length && lastNumber === move.moveNumber) {
-      parts[parts.length - 1] = `${parts[parts.length - 1]} ${move.san}${comment}`;
+      parts[parts.length - 1] = `${parts[parts.length - 1]} ${segment}`;
     } else {
-      parts.push(`${move.moveNumber}... ${move.san}${comment}`);
+      parts.push(`${move.moveNumber}... ${segment}`);
     }
     lastNumber = move.moveNumber;
   });
@@ -426,6 +457,34 @@ function recordedGamesToPgn(games: RecordedGame[]) {
     .filter((chunk) => chunk && chunk.trim())
     .join("\n\n")
     .trim();
+}
+
+
+function formatVariationSan(startFen: string, sanMoves: string[]) {
+  if (!sanMoves.length) return "";
+  const tokens: string[] = [];
+  const parts = startFen.split(" ");
+  const sideToMove = parts[1] === "b" ? "b" : "w";
+  let currentColor = sideToMove;
+  let moveNumber = parseInt(parts[5], 10);
+  if (!Number.isFinite(moveNumber)) moveNumber = 1;
+  sanMoves.forEach((sanRaw) => {
+    const san = String(sanRaw || "").trim();
+    if (!san) return;
+    if (currentColor === "w") {
+      tokens.push(`${moveNumber}. ${san}`);
+      currentColor = "b";
+    } else {
+      if (tokens.length && !tokens[tokens.length - 1].includes("...")) {
+        tokens[tokens.length - 1] = `${tokens[tokens.length - 1]} ${san}`;
+      } else {
+        tokens.push(`${moveNumber}... ${san}`);
+      }
+      moveNumber += 1;
+      currentColor = "w";
+    }
+  });
+  return tokens.join(" ").replace(/\s+/g, " ").trim();
 }
 
 
@@ -1132,6 +1191,76 @@ const styles = {
 
   recordedSummary: { fontSize: 12, color: "#4b5563" },
 
+  variationList: {
+
+    display: "grid",
+
+    gap: 6,
+
+  },
+
+  variationItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 8px",
+    borderRadius: 10,
+    border: "1px solid #d1d5db",
+    background: "#f8fafc",
+    color: "#1f2937",
+    fontSize: 12,
+  },
+
+  variationTag: {
+
+    display: "inline-flex",
+
+    alignItems: "center",
+
+    justifyContent: "center",
+
+    width: 20,
+
+    height: 20,
+
+    borderRadius: "999px",
+
+    background: "#2563eb",
+
+    color: "#fff",
+
+    fontSize: 11,
+
+    fontWeight: 700,
+
+  },
+
+  variationText: {
+
+    flex: 1,
+
+    fontSize: 12,
+
+    color: "#111827",
+
+  },
+
+  variationProgress: {
+
+    fontSize: 12,
+
+    color: "#1d4ed8",
+
+    background: "#eff6ff",
+
+    border: "1px solid #bfdbfe",
+
+    borderRadius: 10,
+
+    padding: "6px 8px",
+
+  },
+
 
 
   moveNumber: { color: "#6b7280", paddingRight: 6 },
@@ -1666,12 +1795,34 @@ export default function App() {
   const recordedIdRef = useRef(1);
 
   const [recorderOpen, setRecorderOpen] = useState(false);
+  const [editingGameId, setEditingGameId] = useState<string | null>(null);
+  const [variationDraft, setVariationDraft] = useState("");
+  const variationSessionRef = useRef<VariationInternal | null>(null);
+  const [variationSession, setVariationSession] = useState<VariationState | null>(null);
+
+  const clearVariationSession = useCallback(() => {
+
+    variationSessionRef.current = null;
+
+    setVariationSession(null);
+
+    setVariationDraft("");
+
+  }, []);
+
+  useEffect(() => {
+
+    clearVariationSession();
+
+  }, [games, gameIndex, clearVariationSession]);
 
   const TRAINING_AUTO_DELAY_MS = 500;
   const trainingAutoMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingTrainingAutoMoveRef = useRef(false);
 
-  const liveFen = fenHistory[step] || new Chess().fen();
+  const baseLiveFen = fenHistory[step] || new Chess().fen();
+  const liveFen = variationSession?.currentFen ?? baseLiveFen;
+  const variationActive = !!variationSession;
 
 
 
@@ -1694,6 +1845,7 @@ export default function App() {
 
 
   const activeCommentValue = activeRecordedMove?.comment ?? "";
+  const activeVariations = activeRecordedMove?.variations || [];
 
   const activeMoveLabel = useMemo(() => {
 
@@ -2405,6 +2557,8 @@ export default function App() {
 
   const animateToStep = (targetStep: number) => {
 
+    if (variationSessionRef.current) return;
+
     cancelAnimation();
 
     const from = stepRef.current;
@@ -2498,6 +2652,8 @@ export default function App() {
           from: move.from || null,
 
           to: move.to || null,
+
+          variations: [],
 
         });
 
@@ -2696,126 +2852,6 @@ export default function App() {
 
 
 
-  const addRecordedGame = useCallback(() => {
-
-    if (!playedMoves.length) {
-
-      flash(false, t("Nessuna mossa da registrare.", "No moves to record."));
-
-      return;
-
-    }
-
-    const id = `rec-${recordedIdRef.current++}`;
-
-    const snapshotMoves = playedMoves.map((mv) => ({ ...mv }));
-
-    const snapshotHeaders = { ...recordHeaders };
-
-    const normalizedResult = (recordResult || "*").trim() || "*";
-
-    setRecordedGames((prev) => [...prev, { id, headers: snapshotHeaders, moves: snapshotMoves, result: normalizedResult }]);
-
-    flash(true, t("Partita aggiunta al tuo PGN personalizzato.", "Game added to your custom PGN."));
-
-  }, [playedMoves, recordHeaders, recordResult, flash]);
-
-
-
-  const removeRecordedGame = useCallback(
-
-    (id: string) => {
-
-      setRecordedGames((prev) => {
-
-        const next = prev.filter((game) => game.id !== id);
-
-        if (next.length !== prev.length) flash(true, t("Partita rimossa.", "Game removed."));
-
-        return next;
-
-      });
-
-    },
-
-    [flash]
-
-  );
-
-
-
-  const resetRecordingForm = useCallback(() => {
-
-    setRecordHeaders(defaultRecordHeaders());
-
-    setRecordResult("*");
-
-  }, []);
-
-
-
-  const downloadRecordedPgn = useCallback(() => {
-
-    if (!recordedGames.length) {
-
-      flash(false, t("Non ci sono partite registrate da salvare.", "No recorded games to save."));
-
-      return;
-
-    }
-
-    const text = aggregatedRecordedPgn;
-
-    if (!text.trim()) {
-
-      flash(false, t("Il PGN da salvare è vuoto.", "Generated PGN is empty."));
-
-      return;
-
-    }
-
-    if (typeof document === "undefined" || typeof window === "undefined") {
-
-      flash(false, t("Salvataggio disponibile solo nel browser.", "Saving is available in the browser only."));
-
-      return;
-
-    }
-
-    try {
-
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-
-      const url = URL.createObjectURL(blob);
-
-      const link = document.createElement("a");
-
-      const base = (recordHeaders.Event || "my-games").trim().replace(/\s+/g, "_") || "my-games";
-
-      link.href = url;
-
-      link.download = `${base}-${Date.now()}.pgn`;
-
-      document.body.appendChild(link);
-
-      link.click();
-
-      document.body.removeChild(link);
-
-      URL.revokeObjectURL(url);
-
-      flash(true, t("PGN salvato correttamente.", "PGN saved successfully."));
-
-    } catch {
-
-      flash(false, t("Impossibile salvare il file PGN.", "Unable to save the PGN file."));
-
-    }
-
-  }, [aggregatedRecordedPgn, flash, recordedGames.length, recordHeaders.Event]);
-
-
-
   /* =====================================================
 
      Engine: stato e integrazione
@@ -2926,13 +2962,457 @@ export default function App() {
 
   const t = (it: string, en: string) => (isEnglish ? en : it);
 
+  const addRecordedGame = useCallback(() => {
+
+    if (!playedMoves.length) {
+
+      flash(false, t("Nessuna mossa da registrare.", "No moves to record."));
+
+      return;
+
+    }
+
+    const snapshotMoves = playedMoves.map((mv) => ({
+      ...mv,
+      variations: mv.variations ? mv.variations.slice() : undefined,
+    }));
+
+    const snapshotHeaders = { ...recordHeaders };
+
+    const normalizedResult = (recordResult || "*").trim() || "*";
+
+    const startFenValue = fenHistory[0] || new Chess().fen();
+
+    if (editingGameId) {
+
+      let updated = false;
+
+      setRecordedGames((prev) => {
+
+        const next = prev.map((game) => {
+
+          if (game.id !== editingGameId) return game;
+
+          updated = true;
+
+          return { ...game, headers: snapshotHeaders, moves: snapshotMoves, result: normalizedResult, startFen: startFenValue };
+
+        });
+
+        if (!updated) {
+
+          const id = editingGameId;
+
+          return [...next, { id, headers: snapshotHeaders, moves: snapshotMoves, result: normalizedResult, startFen: startFenValue }];
+
+        }
+
+        return next;
+
+      });
+
+      setEditingGameId(null);
+
+      flash(true, t("Partita aggiornata.", "Game updated."));
+
+      return;
+
+    }
+
+    const id = `rec-${recordedIdRef.current++}`;
+
+    setRecordedGames((prev) => [...prev, { id, headers: snapshotHeaders, moves: snapshotMoves, result: normalizedResult, startFen: startFenValue }]);
+
+    flash(true, t("Partita aggiunta al tuo PGN personalizzato.", "Game added to your custom PGN."));
+
+  }, [playedMoves, recordHeaders, recordResult, flash, fenHistory, editingGameId, t]);
+
+  const removeRecordedGame = useCallback(
+
+    (id: string) => {
+
+      setRecordedGames((prev) => {
+
+        const next = prev.filter((game) => game.id !== id);
+
+        if (next.length !== prev.length) flash(true, t("Partita rimossa.", "Game removed."));
+
+        return next;
+
+      });
+
+      if (editingGameId === id) {
+
+        setEditingGameId(null);
+
+      }
+
+    },
+
+    [flash, editingGameId, t]
+
+  );
+
+  const resetRecordingForm = useCallback(() => {
+
+    setRecordHeaders(defaultRecordHeaders());
+
+    setRecordResult("*");
+
+    setVariationDraft("");
+
+    setEditingGameId(null);
+
+  }, []);
+
+  const cancelEditingRecordedGame = useCallback(() => {
+
+    setEditingGameId(null);
+
+    setVariationDraft("");
+
+    flash(true, t("Modifica annullata.", "Edit cancelled."));
+
+  }, [flash, t]);
+
+  const ensureVariationSession = useCallback((): VariationInternal | null => {
+
+    if (variationSessionRef.current) return variationSessionRef.current;
+
+    if (training || playVsEngine) {
+
+      flash(false, t("Disattiva il training o il motore per registrare una variante.", "Disable training or the engine to record a variation."));
+
+      return null;
+
+    }
+
+    const currentStep = stepRef.current;
+    const anchorIndex = playedMoves.findIndex((mv) => mv.fenIndex === currentStep);
+
+    if (anchorIndex === -1) {
+
+      flash(false, t("Seleziona la mossa a cui aggiungere la variante.", "Select the move you want to annotate with a variation."));
+
+      return null;
+
+    }
+
+    const startFen = fenHistory[currentStep] || new Chess().fen();
+
+    const session: VariationInternal = {
+
+      anchorIndex,
+
+      startStep: currentStep,
+
+      startFen,
+
+      sanMoves: [],
+
+      fenList: [startFen],
+
+      chess: new Chess(startFen),
+
+    };
+
+    variationSessionRef.current = session;
+    setVariationSession({ anchorIndex, startFen, sanMoves: [], currentFen: startFen });
+    setVariationDraft("");
+    flash(true, t("Registrazione variante attiva: effettua mosse sulla scacchiera.", "Variation recording active: play moves on the board."));
+
+    setMoveFrom("");
+
+    setOptionSquares({});
+
+    return session;
+
+  }, [fenHistory, flash, playedMoves, playVsEngine, training, t]);
 
 
+  const finishVariationRecording = useCallback((commit: boolean) => {
+
+    const session = variationSessionRef.current;
+
+    if (!session) return;
+
+    variationSessionRef.current = null;
+
+    setVariationSession(null);
+
+    setVariationDraft("");
+
+    setMoveFrom("");
+
+    setOptionSquares({});
+    setShowBestOnce(false);
+
+    const restoreFen = fenHistory[session.startStep] || session.startFen;
+
+    chessGameRef.current = new Chess(restoreFen);
+
+    setStep(session.startStep);
 
 
+    if (commit) {
 
+      if (!session.sanMoves.length) {
 
+      if (session.anchorIndex < 0 || session.anchorIndex >= playedMoves.length) {
+        flash(false, t("Impossibile associare la variante alla mossa selezionata.", "Unable to attach the variation to the selected move."));
+        return;
+      }
+        flash(false, t("Nessuna mossa registrata per la variante.", "No moves recorded for the variation."));
 
+        return;
+
+      }
+
+      const variationSan = formatVariationSan(session.startFen, session.sanMoves);
+
+      if (!variationSan) {
+
+        flash(false, t("Variante non valida.", "Variation is not valid."));
+
+        return;
+
+      }
+
+      setPlayedMoves((prev) =>
+
+        prev.map((mv, idx) => {
+
+          if (idx !== session.anchorIndex) return mv;
+
+          const existing = mv.variations ? mv.variations.slice() : [];
+
+          if (existing.includes(variationSan)) return mv;
+
+          return { ...mv, variations: [...existing, variationSan] };
+
+        })
+
+      );
+
+      flash(true, t("Variante salvata.", "Variation saved."));
+
+    } else {
+
+      flash(false, t("Variante annullata.", "Variation cancelled."));
+
+    }
+
+  }, [fenHistory, flash, playedMoves, setStep, setPlayedMoves, setMoveFrom, setOptionSquares, setShowBestOnce, t]);
+
+  const addVariationToActive = useCallback(() => {
+
+    const text = variationDraft.trim();
+
+    if (!text) {
+
+      flash(false, t("Inserisci una variante prima di aggiungerla.", "Enter a variation before adding it."));
+
+      return;
+
+    }
+
+    if (activeFenIndex == null) {
+
+      flash(false, t("Seleziona una mossa per collegare la variante.", "Select a move to attach the variation to."));
+
+      return;
+
+    }
+
+    const sanitized = text.replace(/^\(([\s\S]*)\)$/u, "$1").trim();
+
+    if (!sanitized) {
+
+      flash(false, t("La variante non può essere vuota.", "Variation cannot be empty."));
+
+      return;
+
+    }
+
+    let added = false;
+
+    setPlayedMoves((prev) =>
+
+      prev.map((mv) => {
+
+        if (mv.fenIndex !== activeFenIndex) return mv;
+
+        const current = mv.variations ? mv.variations.slice() : [];
+
+        if (current.map((v) => v.trim()).includes(sanitized)) return mv;
+
+        added = true;
+
+        return { ...mv, variations: [...current, sanitized] };
+
+      })
+
+    );
+
+    if (!added) {
+
+      flash(false, t("Questa variante è già presente.", "This variation is already present."));
+
+      return;
+
+    }
+
+    setVariationDraft("");
+
+    flash(true, t("Variante aggiunta.", "Variation added."));
+
+  }, [variationDraft, activeFenIndex, flash, t]);
+
+  const removeVariationFromActive = useCallback(
+
+    (index: number) => {
+
+      if (activeFenIndex == null) return;
+
+      let removed = false;
+
+      setPlayedMoves((prev) =>
+
+        prev.map((mv) => {
+
+          if (mv.fenIndex !== activeFenIndex) return mv;
+
+          const current = mv.variations ? mv.variations.slice() : [];
+
+          if (index < 0 || index >= current.length) return mv;
+
+          current.splice(index, 1);
+
+          removed = true;
+
+          return { ...mv, variations: current.length ? current : undefined };
+
+        })
+
+      );
+
+      if (!removed) {
+
+        flash(false, t("Impossibile rimuovere la variante selezionata.", "Unable to remove the selected variation."));
+
+        return;
+
+      }
+
+      flash(true, t("Variante rimossa.", "Variation removed."));
+
+    },
+
+    [activeFenIndex, flash, t]
+
+  );
+
+  const beginEditRecordedGame = useCallback(
+
+    (game: RecordedGame) => {
+
+      clearVariationSession();
+
+      setRecorderOpen(true);
+
+      setEditingGameId(game.id);
+
+      const baseHeaders = defaultRecordHeaders();
+
+      setRecordHeaders({ ...baseHeaders, ...(game.headers || {}) });
+
+      setRecordResult((game.result || "*").trim() || "*");
+
+      const clonedMoves = (game.moves || []).map((mv) => ({
+        ...mv,
+        variations: mv.variations ? mv.variations.slice() : undefined,
+      }));
+
+      setPlayedMoves(clonedMoves);
+      setVariationDraft("");
+
+      const startFen = game.startFen || new Chess().fen();
+
+      const newHistory = [startFen, ...clonedMoves.map((mv) => mv.fen)];
+
+      setFenHistory(newHistory);
+
+      setStep(Math.max(0, newHistory.length - 1));
+
+      setTraining(false);
+
+      flash(true, t("Partita caricata per la modifica.", "Game loaded for editing."));
+
+    },
+
+    [clearVariationSession, flash, t]
+
+  );
+
+  const downloadRecordedPgn = useCallback(() => {
+
+    if (!recordedGames.length) {
+
+      flash(false, t("Non ci sono partite registrate da salvare.", "No recorded games to save."));
+
+      return;
+
+    }
+
+    const text = aggregatedRecordedPgn;
+
+    if (!text.trim()) {
+
+      flash(false, t("Il PGN da salvare è vuoto.", "Generated PGN is empty."));
+
+      return;
+
+    }
+
+    if (typeof document === "undefined" || typeof window === "undefined") {
+
+      flash(false, t("Salvataggio disponibile solo nel browser.", "Saving is available in the browser only."));
+
+      return;
+
+    }
+
+    try {
+
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+
+      const base = (recordHeaders.Event || "my-games").trim().replace(/\s+/g, "_") || "my-games";
+
+      link.href = url;
+
+      link.download = `${base}-${Date.now()}.pgn`;
+
+      document.body.appendChild(link);
+
+      link.click();
+
+      document.body.removeChild(link);
+
+      URL.revokeObjectURL(url);
+
+      flash(true, t("PGN salvato correttamente.", "PGN saved successfully."));
+
+    } catch {
+
+      flash(false, t("Impossibile salvare il file PGN.", "Unable to save the PGN file."));
+
+    }
+
+  }, [aggregatedRecordedPgn, flash, recordedGames.length, recordHeaders.Event, t]);
 
   // Rotazione scacchiera
 
@@ -3934,9 +4414,20 @@ export default function App() {
 
     if (sourceSquare === targetSquare) return false;
 
-    const baseFen = fenHistory[stepRef.current];
+    let session = variationSessionRef.current;
+    if (!session && stepRef.current < playedMoves.length) {
+      if (playedMoves.some((mv) => mv.fenIndex === stepRef.current)) {
+        session = ensureVariationSession() ?? null;
+      }
+    }
 
-    const chess = new Chess(baseFen);
+    const inVariant = !!session;
+
+    const baseFen = inVariant
+      ? session!.fenList[session!.fenList.length - 1]
+      : fenHistory[stepRef.current];
+
+    const chess = inVariant ? session!.chess : new Chess(baseFen);
 
     const pieceOnSource = chess.get(sourceSquare);
 
@@ -3976,7 +4467,7 @@ export default function App() {
 
     // VS Engine: consenti solo mosse umane nel loro turno
 
-    if (playVsEngine) {
+    if (playVsEngine && !inVariant) {
 
       const humanSide = engineSide === 'w' ? 'b' : 'w';
 
@@ -3986,7 +4477,7 @@ export default function App() {
 
 
 
-    if (training && stepRef.current < currentLinePlies.length) {
+    if (!inVariant && training && stepRef.current < currentLinePlies.length) {
 
       const expectedPly = currentLinePlies[stepRef.current];
 
@@ -4186,6 +4677,36 @@ export default function App() {
 
     const newFen = chess.fen();
 
+    if (inVariant) {
+
+      session!.sanMoves.push(move.san);
+
+      session!.fenList.push(newFen);
+
+      setVariationSession({
+
+        anchorIndex: session!.anchorIndex,
+
+        startFen: session!.startFen,
+
+        sanMoves: [...session!.sanMoves],
+
+        currentFen: newFen,
+
+      });
+
+      chessGameRef.current = new Chess(newFen);
+
+      setMoveFrom('');
+
+      setOptionSquares({});
+
+      setShowBestOnce(false);
+
+      return true;
+
+    }
+
     recordPlayedMoves([{ move, fen: newFen }]);
 
     setFenHistory((prev) => [...prev.slice(0, stepRef.current + 1), newFen]);
@@ -4237,6 +4758,7 @@ export default function App() {
   // === Reset partita / nuova partita ===
 
   const resetGame = () => {
+    clearVariationSession();
     pendingTrainingAutoMoveRef.current = false;
     clearTrainingAutoMoveTimer();
 
@@ -5033,6 +5555,8 @@ export default function App() {
 
   const onWheelNav = (e: React.WheelEvent) => {
 
+    if (variationSessionRef.current) return;
+
     const now = Date.now();
 
     if (now - lastWheelRef.current < 110) return;
@@ -5201,7 +5725,7 @@ export default function App() {
 
     const commentDisabled = !activeRecordedMove;
 
-    const clearDisabled = commentDisabled || !activeCommentValue.trim();
+    const clearDisabled = commentDisabled || variationActive || !activeCommentValue.trim();
 
     const saveDisabled = recordedGames.length === 0;
 
@@ -5223,6 +5747,14 @@ export default function App() {
 
       : t("Seleziona una mossa dall'elenco per aggiungere un commento.", "Select a move from the list to add a comment.");
 
+    const variationAnchorMove = variationSession ? playedMoves[variationSession.anchorIndex] : null;
+
+    const variationAnchorMatchesActive = variationSession
+      ? (variationAnchorMove?.fenIndex ?? null) === activeFenIndex
+      : false;
+    const variationPreviewSan = variationSession ? formatVariationSan(variationSession.startFen, variationSession.sanMoves) : "";
+    const manualVariationDisabled = commentDisabled || variationActive;
+
     const gamesSummary = recordedGames.length
 
       ? isEnglish
@@ -5232,6 +5764,11 @@ export default function App() {
         : `Partite registrate: ${recordedGames.length}`
 
       : "";
+
+    const editingIndex = editingGameId ? recordedGames.findIndex((g) => g.id === editingGameId) : -1;
+    const isEditingRecorded = editingIndex >= 0;
+    const primaryActionLabel = isEditingRecorded ? t("Salva modifiche", "Save changes") : t("Aggiungi partita", "Add game");
+    const secondaryActionLabel = isEditingRecorded ? t("Annulla modifica", "Cancel edit") : t("Reset intestazioni", "Reset headers");
 
     const headerFields = [
 
@@ -5261,27 +5798,39 @@ export default function App() {
 
           </div>
 
+          {isEditingRecorded ? (
+
+            <div style={{ ...styles.recordedSummary, color: "#1d4ed8", fontWeight: 600 }}>
+
+              {t("Modifica della partita", "Editing game")} #{editingIndex + 1}
+
+            </div>
+
+          ) : null}
+
           <div style={styles.recordedSummary}>{recordSummary}</div>
 
         </div>
-
-
-
         <div style={{ display: "grid", gap: 6 }}>
+
+
+
 
           <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>{commentHint}</div>
 
           <textarea
 
-            style={{ ...styles.textarea, minHeight: 72, resize: "vertical" as const }}
+            style={{ ...styles.textarea, minHeight: 60, resize: "vertical" as const }}
 
-            value={activeCommentValue}
+            value={variationDraft}
 
-            onChange={(e) => handleActiveCommentChange(e.target.value)}
+            onChange={(e) => setVariationDraft(e.target.value)}
 
-            placeholder={t("Scrivi il commento qui...", "Write your comment here...")}
+            placeholder={variationActive
+              ? t("Termina la registrazione della variante sulla scacchiera per usare questo campo.", "Finish the board variation recording before using this field.")
+              : t("Inserisci la variante in notazione PGN, es. 12...g6 13.Nc3", "Enter the variation in PGN notation, e.g. 12...g6 13.Nc3")}
 
-            disabled={commentDisabled}
+            disabled={manualVariationDisabled}
 
             spellCheck={false}
 
@@ -5296,15 +5845,10 @@ export default function App() {
               onClick={clearActiveComment}
 
               style={{
-
                 ...styles.btn,
-
-                ...(clearDisabled ? styles.btnDisabled : {}),
-
+                ...(clearDisabled ? styles.btnDisabled : styles.btnPrimary),
                 padding: "8px 12px",
-
                 fontSize: 12,
-
               }}
 
               disabled={clearDisabled}
@@ -5321,9 +5865,143 @@ export default function App() {
 
 
 
+
         <div style={{ display: "grid", gap: 6 }}>
 
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>{t("Intestazioni PGN", "PGN headers")}</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>
+
+            {t("Varianti per la mossa selezionata", "Variations for the selected move")}
+
+          </div>
+
+          {activeVariations.length ? (
+            <div style={styles.variationList}>
+              {activeVariations.map((variation, idx) => (
+                <div key={`var-${activeFenIndex ?? "none"}-${idx}`} style={styles.variationItem}>
+                  <span style={styles.variationTag}>{idx + 1}</span>
+                  <span style={styles.variationText}>{variation}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeVariationFromActive(idx)}
+                    style={{ ...styles.btn, ...styles.btnToggleOff, padding: "4px 10px", fontSize: 11 }}
+                    title={t("Rimuovi questa variante", "Remove this variation")}
+                    disabled={activeFenIndex == null || manualVariationDisabled}
+                  >
+                    {t("Rimuovi", "Remove")}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ ...styles.recordedSummary, fontStyle: "italic" }}>
+              {commentDisabled
+                ? t("Seleziona una mossa per gestire le varianti.", "Select a move to manage variations.")
+                : t("Nessuna variante per questa mossa.", "No variations for this move yet.")}
+            </div>
+          )}
+
+          {variationSession ? (
+            variationAnchorMatchesActive ? (
+              <div style={styles.variationProgress}>
+                {variationSession.sanMoves.length
+                  ? `${t("In registrazione:", "Recording:")} ${variationPreviewSan}`
+                  : t("Registrazione variante attiva: effettua mosse sulla scacchiera.", "Variation recording active: play moves on the board.")}
+              </div>
+            ) : (
+              <div style={styles.variationProgress}>
+                {t("Variante in corso su un'altra mossa. Torna alla mossa selezionata per continuare o concludere.", "Variation recording is active on another move. Return to that move to continue or finish.")}
+              </div>
+            )
+          ) : null}
+
+          {variationSession ? (
+            <div style={styles.recorderActions}>
+              <button
+                type="button"
+                onClick={() => finishVariationRecording(true)}
+                style={{ ...styles.btn, ...styles.btnPrimary, padding: "8px 12px", fontSize: 12 }}
+                disabled={!variationSession.sanMoves.length}
+              >
+                {t("Termina variante", "Finish variation")}
+              </button>
+              <button
+                type="button"
+                onClick={() => finishVariationRecording(false)}
+                style={{ ...styles.btn, ...styles.btnToggleOff, padding: "8px 12px", fontSize: 12 }}
+              >
+                {t("Annulla variante", "Cancel variation")}
+              </button>
+            </div>
+          ) : null}
+          <textarea
+
+            style={{ ...styles.textarea, minHeight: 60, resize: "vertical" as const }}
+
+            value={variationDraft}
+
+            onChange={(e) => setVariationDraft(e.target.value)}
+
+            placeholder={variationActive
+              ? t("Termina la registrazione della variante sulla scacchiera per usare questo campo.", "Finish the board variation recording before using this field.")
+              : t("Inserisci la variante in notazione PGN, es. 12...g6 13.Nc3", "Enter the variation in PGN notation, e.g. 12...g6 13.Nc3")}
+
+            disabled={manualVariationDisabled}
+
+            spellCheck={false}
+
+          />
+
+
+          <div style={styles.recorderActions}>
+
+            <button
+
+              type="button"
+
+              onClick={addVariationToActive}
+
+              style={{
+
+                ...styles.btn,
+
+                ...(manualVariationDisabled ? styles.btnDisabled : styles.btnPrimary),
+
+                padding: "8px 12px",
+
+                fontSize: 12,
+
+              }}
+
+              disabled={manualVariationDisabled}
+
+            >
+
+              {t("Aggiungi variante", "Add variation")}
+
+            </button>
+
+          </div>
+
+          <div style={{ fontSize: 11, color: "#6b7280" }}>
+
+            {t(
+
+              "Suggerimento: includi numeri di mossa ed ellissi secondo la sintassi PGN. Le parentesi saranno aggiunte automaticamente.",
+
+              "Tip: include move numbers and ellipses following PGN syntax. Parentheses are added automatically."
+
+            )}
+
+          </div>
+
+        </div>
+
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>
+
+            {t("Intestazioni PGN", "PGN headers")}
+
+          </div>
 
           <div
 
@@ -5409,6 +6087,14 @@ export default function App() {
 
               onClick={addRecordedGame}
 
+          <div style={styles.recorderActions}>
+
+            <button
+
+              type="button"
+
+              onClick={addRecordedGame}
+
               style={
 
                 addDisabled
@@ -5423,7 +6109,7 @@ export default function App() {
 
             >
 
-              {t("Aggiungi partita", "Add game")}
+              {primaryActionLabel}
 
             </button>
 
@@ -5431,18 +6117,25 @@ export default function App() {
 
               type="button"
 
-              onClick={resetRecordingForm}
+              onClick={isEditingRecorded ? cancelEditingRecordedGame : resetRecordingForm}
 
-              style={{ ...styles.btn, padding: "8px 14px" }}
+              style={{
+
+                ...styles.btn,
+
+                ...(isEditingRecorded ? styles.btnToggleOff : {}),
+
+                padding: "8px 14px",
+
+              }}
 
             >
 
-              {t("Reset intestazioni", "Reset headers")}
+              {secondaryActionLabel}
 
             </button>
 
           </div>
-
         </div>
 
 
@@ -5471,9 +6164,15 @@ export default function App() {
 
                 const subtitle = `${eventLabel}${game.result ? ` - ${game.result}` : ""}`;
 
+                const isEditingThis = editingGameId === game.id;
+
+                const rowStyle = isEditingThis
+                  ? { ...styles.recordedRow, borderColor: "#2563eb", background: "#eff6ff" }
+                  : styles.recordedRow;
+
                 return (
 
-                  <div key={game.id} style={styles.recordedRow}>
+                  <div key={game.id} style={rowStyle}>
 
                     <div style={{ display: "grid", gap: 2 }}>
 
@@ -5483,21 +6182,51 @@ export default function App() {
 
                     </div>
 
-                    <button
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
 
-                      type="button"
+                      <button
 
-                      onClick={() => removeRecordedGame(game.id)}
+                        type="button"
 
-                      style={{ ...styles.btn, ...styles.btnToggleOff, padding: "6px 10px", fontSize: 11 }}
+                        onClick={() => beginEditRecordedGame(game)}
 
-                      title={t("Elimina questa partita", "Remove this game")}
+                        style={{
 
-                    >
+                          ...styles.btn,
 
-                      {t("Rimuovi", "Remove")}
+                          ...(isEditingThis ? styles.btnToggleOn : {}),
 
-                    </button>
+                          padding: "6px 10px",
+
+                          fontSize: 11,
+
+                        }}
+
+                        title={t("Modifica questa partita", "Edit this game")}
+
+                      >
+
+                        {isEditingThis ? t("In modifica", "Editing") : t("Modifica", "Edit")}
+
+                      </button>
+
+                      <button
+
+                        type="button"
+
+                        onClick={() => removeRecordedGame(game.id)}
+
+                        style={{ ...styles.btn, ...styles.btnToggleOff, padding: "6px 10px", fontSize: 11 }}
+
+                        title={t("Elimina questa partita", "Remove this game")}
+
+                      >
+
+                        {t("Rimuovi", "Remove")}
+
+                      </button>
+
+                    </div>
 
                   </div>
 
@@ -5539,9 +6268,10 @@ export default function App() {
 
             placeholder={t("Le partite registrate appariranno qui.", "Recorded games will appear here.")}
 
-            spellCheck={false}
-
           />
+
+
+
 
           <button
 
@@ -6173,6 +6903,8 @@ export default function App() {
 
           />
 
+
+
           <button style={{ ...styles.mAccentButton, width: "100%" }} onClick={loadFromTextarea}>{t("Carica", "Load")}</button>
 
         </div>
@@ -6427,6 +7159,7 @@ export default function App() {
 
           />
 
+
         </div>
 
         <button
@@ -6579,6 +7312,8 @@ export default function App() {
 
           />
 
+
+
         </div>
 
 
@@ -6677,9 +7412,9 @@ export default function App() {
 
               onClick={goStart}
 
-              disabled={atStart}
+              disabled={variationActive || atStart}
 
-              style={navStyle(atStart)}
+              style={navStyle(variationActive || atStart)}
 
               title={t("Inizio", "Start")}
 
@@ -6695,9 +7430,9 @@ export default function App() {
 
               onClick={goPrev}
 
-              disabled={atStart}
+              disabled={variationActive || atStart}
 
-              style={navStyle(atStart)}
+              style={navStyle(variationActive || atStart)}
 
               title={t("Indietro", "Back")}
 
@@ -6713,9 +7448,9 @@ export default function App() {
 
               onClick={goNext}
 
-              disabled={forwardDisabled}
+              disabled={variationActive || forwardDisabled}
 
-              style={navStyle(forwardDisabled, true)}
+              style={navStyle(variationActive || forwardDisabled, true)}
 
               title={t("Avanti", "Next")}
 
@@ -6731,9 +7466,9 @@ export default function App() {
 
               onClick={goEnd}
 
-              disabled={atEnd}
+              disabled={variationActive || atEnd}
 
-              style={navStyle(atEnd)}
+              style={navStyle(variationActive || atEnd)}
 
               title={t("Fine", "End")}
 
@@ -6897,11 +7632,11 @@ export default function App() {
 
                         <button
 
-              style={btnStyle(step === 0 || isAnimating)}
+              style={btnStyle(variationActive || step === 0 || isAnimating)}
 
               onClick={goStart}
 
-              disabled={step === 0 || isAnimating}
+              disabled={variationActive || step === 0 || isAnimating}
 
               title={t("Inizio", "Start")}
 
@@ -6915,11 +7650,11 @@ export default function App() {
 
             <button
 
-              style={btnStyle(!(step > 0 && !isAnimating))}
+              style={btnStyle(variationActive || !(step > 0 && !isAnimating))}
 
               onClick={goPrev}
 
-              disabled={!(step > 0 && !isAnimating)}
+              disabled={variationActive || !(step > 0 && !isAnimating)}
 
               title={t("Indietro", "Back")}
 
@@ -6933,11 +7668,11 @@ export default function App() {
 
             <button
 
-              style={{ ...btnStyle(!(step < fenHistory.length - 1 && !isAnimating)), ...styles.btnPrimary }}
+              style={{ ...btnStyle(variationActive || !(step < fenHistory.length - 1 && !isAnimating)), ...styles.btnPrimary }}
 
               onClick={goNext}
 
-              disabled={!(step < fenHistory.length - 1 && !isAnimating)}
+              disabled={variationActive || !(step < fenHistory.length - 1 && !isAnimating)}
 
               title={t("Avanti", "Next")}
 
@@ -6951,11 +7686,11 @@ export default function App() {
 
             <button
 
-              style={btnStyle(isAnimating || step === Math.max(0, fenHistory.length - 1))}
+              style={btnStyle(variationActive || isAnimating || step === Math.max(0, fenHistory.length - 1))}
 
               onClick={goEnd}
 
-              disabled={isAnimating || step === Math.max(0, fenHistory.length - 1)}
+              disabled={variationActive || isAnimating || step === Math.max(0, fenHistory.length - 1)}
 
               title={t("Fine", "End")}
 
@@ -7889,6 +8624,8 @@ export default function App() {
 
 
 
+
+
           {/* Pannello destro: mosse/varianti PGN */}
 
           <div style={styles.right} ref={movesPaneRef}>
@@ -8005,7 +8742,6 @@ export default function App() {
 
             }}
 
-          />
 
         </div>
 
@@ -8088,4 +8824,4 @@ export default function App() {
 
 
 
-
+                style={{ ...styles.btn, ...(activeFenIndex == null || manualVariationDisabled ? styles.btnDisabled : styles.btnToggleOff), padding: "4px 10px", fontSize: 11 }}
