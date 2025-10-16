@@ -364,6 +364,7 @@ type VariationInternal = {
   comments: string[];
   fenList: string[];
   chess: Chess;
+  lastMove: { from: string; to: string } | null;
 };
 
 type VariationState = {
@@ -372,6 +373,7 @@ type VariationState = {
   sanMoves: string[];
   comments: string[];
   currentFen: string;
+  lastMove: { from: string; to: string } | null;
 };
 
 function formatPgnDate(date: Date = new Date()) {
@@ -1884,6 +1886,7 @@ export default function App() {
         sanMoves: [...session.sanMoves],
         comments: [...session.comments],
         currentFen: session.fenList[session.fenList.length - 1] ?? session.startFen,
+        lastMove: session.lastMove,
       });
     }
   }, [variationDraft]);
@@ -2731,13 +2734,32 @@ export default function App() {
 
   const lastFromTo = useMemo(() => {
 
+    if (variationSession && variationSession.sanMoves.length) {
+      if (variationSession.lastMove) return variationSession.lastMove;
+      try {
+        const chess = new Chess(variationSession.startFen);
+        let last: any = null;
+        variationSession.sanMoves.forEach((san) => {
+          try {
+            const mv = chess.move(san, { sloppy: true });
+            if (mv) last = mv;
+          } catch {}
+        });
+        return last ? { from: last.from, to: last.to } : null;
+      } catch {
+        return null;
+      }
+    }
+
     try {
 
       const chess = new Chess(fenHistory[0]);
 
       let last: any = null;
 
-      for (let i = 1; i <= step; i++) {
+      const limit = Math.min(step, fenHistory.length - 1);
+
+      for (let i = 1; i <= limit; i++) {
 
         const prevFen = fenHistory[i - 1];
 
@@ -2785,7 +2807,7 @@ export default function App() {
 
     }
 
-  }, [fenHistory, step]);
+  }, [variationSession, fenHistory, step]);
 
 
 
@@ -3147,10 +3169,12 @@ export default function App() {
 
       chess: new Chess(startFen),
 
+      lastMove: null,
+
     };
 
     variationSessionRef.current = session;
-    setVariationSession({ anchorIndex, startFen, sanMoves: [], comments: [], currentFen: startFen });
+    setVariationSession({ anchorIndex, startFen, sanMoves: [], comments: [], currentFen: startFen, lastMove: null });
     setVariationDraft("");
     setVariationEditIndex(null);
     flash(true, t("Registrazione variante attiva: effettua mosse sulla scacchiera.", "Variation recording active: play moves on the board."));
@@ -4758,6 +4782,7 @@ export default function App() {
 
       session!.sanMoves.push(move.san);
       session!.comments.push("");
+      session!.lastMove = { from: move.from, to: move.to };
       session!.fenList.push(newFen);
 
       setVariationSession({
@@ -4766,6 +4791,7 @@ export default function App() {
         sanMoves: [...session!.sanMoves],
         comments: [...session!.comments],
         currentFen: newFen,
+        lastMove: session!.lastMove,
       });
 
       setVariationDraft("");
