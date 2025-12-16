@@ -94,11 +94,12 @@ function defaultOnMessageFactory(params: {
         const pvUci  = mPv[1].trim().split(/\s+/).filter(Boolean);
 
         const fen = lastFenRef.current || new Chess().fen();
+        const rootTurnFactor = fen.split(" ")[1] === "b" ? -1 : 1; // normalize score from White's perspective
         const { moves: pvSan, fens: pvFens } = uciPathToSan(fen, pvUci);
 
         const line: EngineLine = { id: recIdx, depth, pvUci, pvSan, pvFens };
-        if (mMate) line.mate = Number(mMate[1]);
-        else if (mCp) line.cp = Number(mCp[1]);
+        if (mMate) line.mate = Number(mMate[1]) * rootTurnFactor;
+        else if (mCp) line.cp = Number(mCp[1]) * rootTurnFactor;
 
         setLines((prev) => {
           const filtered = (prev || []).filter((existing) => existing && existing.id !== line.id);
@@ -256,7 +257,6 @@ export function useStockfish(engine: StockfishEngineInfo = STOCKFISH_ENGINES[0])
 
   return { ready, thinking, lines, engineErr, setOptions, analyze, stop };
 }
-
 
 
 
