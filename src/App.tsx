@@ -2448,7 +2448,15 @@ export default function App() {
 
     if (!activeEl) return;
 
-    activeEl.scrollIntoView({ block: "center", inline: "nearest", behavior });
+    // Scroll only the PGN pane, keeping the rest of the page steady
+    const paneRect = pane.getBoundingClientRect();
+    const activeRect = activeEl.getBoundingClientRect();
+    const deltaTop = activeRect.top - paneRect.top;
+    const current = pane.scrollTop;
+    const target = current + deltaTop - pane.clientHeight / 2 + activeRect.height / 2;
+    const maxScroll = Math.max(0, pane.scrollHeight - pane.clientHeight);
+    const clamped = Math.max(0, Math.min(target, maxScroll));
+    pane.scrollTo({ top: clamped, behavior });
 
   };
 
