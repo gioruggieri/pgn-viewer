@@ -6488,8 +6488,6 @@ export default function App() {
 
                 mate={topMate}
 
-                turn={liveFen.split(" ")[1] === "w" ? "w" : "b"}
-
               />
 
             </div>
@@ -6811,7 +6809,8 @@ export default function App() {
       boardOrientation: whiteOrientation ? "white" : "black",
     }} />}
     suggestions={suggestions}
-    evaluation={engineOn ? <EvalBar cp={topCp} mate={topMate} turn={sideFromFen(liveFen)} /> : null}
+    evaluation={engineOn ? <EvalBar cp={topCp} mate={topMate}
+      label={t("Valutazione Stockfish dal punto di vista del Bianco", "Stockfish evaluation from White’s perspective")} /> : null}
     preview={preview.visible && preview.fen && <div style={{
       position: "fixed", left: pvLeft, top: pvTop, width: pvSize, height: pvSize,
       pointerEvents: "none", zIndex: 9999, borderRadius: 10, overflow: "hidden", boxShadow: "0 8px 28px #0005",

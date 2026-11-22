@@ -1,15 +1,14 @@
-// @ts-nocheck
-import React from "react";
-
-export function EvalBar({ cp, mate, turn }: { cp?: number; mate?: number; turn: "w"|"b" }) {
-  // score lato White: positivo => meglio per White
-  // Se tocca al Nero, invertiamo per “chi muove” visuale? chess.com mostra sempre vantaggio lato bianco.
-  // Qui manteniamo “vantaggio per White”.
-  const pct = scoreToPct(cp, mate); // 0..1 (0=nero vince, 1=bianco vince)
+export function EvalBar({ cp, mate, label }: { cp?: number; mate?: number; label?: string }) {
+  const pct = scoreToPct(cp, mate);
+  const score = formatScore(cp, mate);
+  const tooltip = label
+    ? score
+    : mate != null ? `M${Math.abs(mate)}` : `${cp == null ? "—" : (cp / 100).toFixed(2)} · ${Math.round(pct * 100)}%`;
 
   return (
-    <div style={{
-      width: 18,
+    <div role={label ? "img" : undefined} aria-label={label ? `${label}: ${score}` : undefined} style={{
+      position: "relative",
+      width: label ? "100%" : 18,
       height: "100%",
       borderRadius: 10,
       overflow: "hidden",
@@ -19,13 +18,14 @@ export function EvalBar({ cp, mate, turn }: { cp?: number; mate?: number; turn: 
       flexDirection: "column-reverse",
     }}>
       <div
-        title={mate != null ? `M${Math.abs(mate)}` : `${fmtCp(cp)} · ${Math.round(pct*100)}%`}
+        title={tooltip}
         style={{
           height: `${pct * 100}%`,
           background: "#fff", // parte bianca
           transition: "height 160ms ease",
         }}
       />
+      {label && <span className="pgn-evaluation-score">{score}</span>}
     </div>
   );
 }
@@ -42,7 +42,9 @@ function scoreToPct(cp?: number, mate?: number) {
   return prob; // 0..1
 }
 
-function fmtCp(cp?: number) {
-  if (cp == null) return "—";
-  return (cp/100).toFixed(2);
+function formatScore(cp?: number, mate?: number) {
+  const value = mate ?? cp;
+  if (value == null) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return sign + (mate == null ? (Math.abs(value) / 100).toFixed(2) : `M${Math.abs(mate)}`);
 }

@@ -49,6 +49,8 @@ html:has(.pgn-desktop) { scrollbar-gutter: stable; }
 .pgn-brand-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: var(--accent); color: #eef5eb; font-size: 26px; font-family: Georgia, serif; }
 .pgn-top-actions, .pgn-transport, .pgn-board-tools, .pgn-variation-tools, .pgn-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .pgn-workspace {
+  --evaluation-width: 54px;
+  --evaluation-gap: 8px;
   --board-auto-size: min(max(400px, calc(100dvh - 264px)), calc((100% - 24px) * .5238));
   --board-max-size: calc(100% - 344px);
   --board-width: clamp(min(280px, var(--board-max-size)), var(--board-size, var(--board-auto-size)), var(--board-max-size));
@@ -60,6 +62,9 @@ html:has(.pgn-desktop) { scrollbar-gutter: stable; }
   grid-template-columns: var(--board-width) minmax(320px, 1fr);
   align-items: start;
   gap: 24px;
+}
+.pgn-workspace:has(.pgn-evaluation) {
+  padding-left: calc(12px + var(--evaluation-width) + var(--evaluation-gap));
 }
 .pgn-board-column { min-width: 0; }
 .pgn-board-stage { position: relative; }
@@ -84,7 +89,26 @@ html:has(.pgn-desktop) { scrollbar-gutter: stable; }
   background: var(--muted);
   box-shadow: -4px 0 var(--muted), 4px 0 var(--muted);
 }
-.pgn-evaluation { position: absolute; top: 0; bottom: 0; right: calc(100% + 7px); }
+.pgn-evaluation {
+  position: absolute;
+  inset: 0 calc(100% + var(--evaluation-gap)) 0 auto;
+  width: var(--evaluation-width);
+}
+.pgn-evaluation-score {
+  position: absolute;
+  inset: 50% 2px auto;
+  transform: translateY(-50%);
+  border: 1px solid #ffffff70;
+  border-radius: 6px;
+  background: #263b31;
+  color: #fff;
+  padding-block: 3px;
+  font-size: .75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
 .pgn-board-frame {
   overflow: hidden;
   border-radius: 10px;
@@ -168,11 +192,11 @@ html:has(.pgn-desktop) { scrollbar-gutter: stable; }
   }
   .pgn-board-column { width: var(--board-width); }
   .pgn-sidebar { height: min(680px, 90vh); }
-  .pgn-evaluation { right: auto; left: 0; z-index: 2; pointer-events: none; }
 }
 @media (max-width: 480px) {
   .pgn-topbar { flex-wrap: wrap; }
-  .pgn-workspace { padding-inline: 12px; }
+  .pgn-workspace { --evaluation-width: 46px; padding-inline: 12px; }
+  .pgn-evaluation-score { font-size: .6875rem; }
 }
 
 
