@@ -1790,35 +1790,13 @@ export default function App() {
 
   const [speechAvailable, setSpeechAvailable] = useState(false);
 
-  const [language, setLanguage] = useState<"it" | "en">("en");
-
-  // Persist & restore UI language
-
-  useEffect(() => {
-
+  const [language, setLanguage] = useState<"it" | "en">(() => {
     try {
-
-      const saved = localStorage.getItem("pgnviewer.language");
-
-      if (saved === "it" || saved === "en") setLanguage(saved as "it" | "en");
-
-      else if (typeof navigator !== "undefined") {
-
-        const nav = (navigator.language || "").toLowerCase();
-
-        if (nav.startsWith("it")) setLanguage("it");
-
-        else setLanguage("en");
-
-      }
-
-    } catch {}
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-
-  }, []);
-
-
+      return localStorage.getItem("pgnviewer.language") === "it" ? "it" : "en";
+    } catch {
+      return "en";
+    }
+  });
 
   useEffect(() => {
 
