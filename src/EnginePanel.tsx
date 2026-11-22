@@ -10,6 +10,7 @@ type EnginePanelProps = {
   depth: number;
   onSelectMove: (lineIndex: number, moveIndex: number) => void;
   baseFen: string;
+  useFenMoveNumbers?: boolean;
   onPreviewFen?: (fen: string, e: React.MouseEvent) => void;
   onPreviewMove?: (e: React.MouseEvent) => void;
   onHidePreview?: () => void;
@@ -50,9 +51,11 @@ const movesWrapperStyle: React.CSSProperties = {
   alignItems: "center",
 };
 
-function moveLabel(plyIndex: number, san: string) {
-  const moveNumber = Math.floor(plyIndex / 2) + 1;
-  const prefix = plyIndex % 2 === 0 ? `${moveNumber}.` : `${moveNumber}...`;
+function moveLabel(plyIndex: number, san: string, fen?: string) {
+  const fields = fen?.split(" ");
+  const colorIndex = plyIndex + (fields?.[1] === "b" ? 1 : 0);
+  const moveNumber = Math.floor(colorIndex / 2) + (Number(fields?.[5]) || 1);
+  const prefix = colorIndex % 2 === 0 ? `${moveNumber}.` : `${moveNumber}...`;
   return `${prefix} ${san}`;
 }
 
@@ -63,6 +66,7 @@ export function EnginePanel({
   depth,
   onSelectMove,
   baseFen,
+  useFenMoveNumbers,
   onPreviewFen,
   onPreviewMove,
   onHidePreview,
@@ -161,7 +165,7 @@ export function EnginePanel({
                         boxShadow: "inset 0 0 0 1px #f3f4f6",
                       }}
                     >
-                      <span style={moveTextStyle}>{moveLabel(moveIdx, san)}</span>
+                      <span style={moveTextStyle}>{moveLabel(moveIdx, san, useFenMoveNumbers ? baseFen : undefined)}</span>
                     </div>
                   );
                 })}

@@ -1,8 +1,12 @@
 // @ts-nocheck
+import { DesktopWorkspace, type WorkspaceMode } from "./DesktopWorkspace";
+import { DesktopMoves } from "./DesktopMoves";
+import { useDesktopEngine } from "./useDesktopEngine";
+import type { GameSummary, PgnReply, PgnRequest } from "./pgn.worker";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Chess } from "chess.js";
+import { DEFAULT_POSITION, Chess } from "chess.js";
 
 import { Chessboard } from "react-chessboard";
 
@@ -13,6 +17,13 @@ import { useStockfish } from "./useStockfish";
 import { EvalBar } from "./EvalBar";
 
 import { EnginePanel } from "./EnginePanel";
+import {
+  defaultRecordHeaders, extractMoveText, formatVariationSan, normalizePgnDate, parseHeaders,
+  parseMovetextToTree, preprocessExternalMarkers, recordedGamesToPgn, sanitizePgnComment,
+  sideFromFen, splitGames, type Line, type PlayedMove, type PlyNode, type PremoveEntry,
+  type RecordedGame, type VariationInternal, type VariationState,
+} from "./pgn";
+
 
 
 
@@ -48,863 +59,9 @@ function detectMobile() {
 
 
 
-/* =====================================================
-
-   PGN utilities — robust tokenizer + game-tree parser
-
-   (== invariati dal tuo file, salvo piccole aggiunte in fondo)
-
-   ===================================================== */
-
-
-
-/** Remove only *semicolon* comments (to end-of-line). Curly comments are kept as tokens. */
-
-function stripSemicolonComments(input: string) {
-
-  return input.replace(/;[^\n]*/g, "");
-
-}
-
-
-
-/** Basic header parsing following PGN tag-pair grammar. */
-
-function parseHeaders(pgn: string) {
-
-  const headers: Record<string, string> = {};
-
-  const headerRegex = /^\s*\[([^\s"]+)\s+"([^"]*)"\]\s*$/gm;
-
-  let m;
-
-  while ((m = headerRegex.exec(pgn))) headers[m[1]] = m[2];
-
-  return headers;
-
-}
-
-
-
-/** Compatibilità con marcatori esterni + pulizia detriti engine */
-
-function preprocessExternalMarkers(pgnText: string) {
-
-  let t = pgnText.replace(/\r\n?/g, "\n");
-
-  t = t.replace(/@@StartBracket@@([\s\S]*?)@@EndBracket@@/g, (_, inside) => {
-
-    const s = String(inside || "").trim();
-
-    return s ? `{ ${s} }` : "";
-
-  });
-
-  t = t.replace(/@@StartFEN@@([\s\S]*?)@@EndFEN@@/g, (_, fen) => {
-
-    const s = String(fen || "").trim();
-
-    return s ? `{FEN: ${s}}` : "";
-
-  });
-
-  t = t.replace(/@@(?:Start|End)[A-Za-z]+@@/g, "");
-
-  t = t.replace(/\[\%[^\]]*\]/g, "");
-
-  t = t.replace(/\(RR\)/g, "");
-
-  t = t.replace(/\(\s*\)/g, "");
-
-  return t;
-
-}
-
-
-
-/** Split a .pgn file into individual games. */
-
-function splitGames(pgnText: string) {
-
-  const normalized = pgnText.replace(/\r\n?/g, "\n");
-
-  const indices: number[] = [];
-
-  const re = /^\s*\[Event\b.*$/gim;
-
-  let m;
-
-  while ((m = re.exec(normalized))) indices.push(m.index);
-
-  if (indices.length === 0) return normalized.trim() ? [normalized.trim()] : [];
-
-  indices.push(normalized.length);
-
-  const games: string[] = [];
-
-  for (let i = 0; i < indices.length - 1; i++) {
-
-    const chunk = normalized.slice(indices[i], indices[i + 1]).trim();
-
-    if (chunk) games.push(chunk);
-
-  }
-
-  return games;
-
-}
-
-
-
-/** Extract only the movetext (after the header section). */
-
-function extractMoveText(pgnGame: string) {
-
-  const normalized = pgnGame.replace(/\r\n?/g, "\n");
-
-  const lastTagMatch = [...normalized.matchAll(/^\s*\[[^\n]*\]\s*$/gm)].pop();
-
-  if (lastTagMatch) {
-
-    return normalized.slice(lastTagMatch.index! + lastTagMatch[0].length).trim();
-
-  }
-
-  const idx = normalized.search(/\n\n/);
-
-  return idx !== -1 ? normalized.slice(idx + 2).trim() : normalized.trim();
-
-}
-
-
-
-/** Sanitize SAN for chess.js but keep +/# for display. */
-
-function sanitizeSANForMove(san: string) {
-
-  return san
-
-    .replace(/\u2212/g, "-")
-
-    .replace(/\+!|\+\?|#!|#\?/g, (m) => m[0])
-
-    .replace(/[!?]+/g, "");
-
-}
-
-
-
-// Token types for movetext
-
-const TT = {
-
-  COMMENT: "COMMENT",
-
-  NAG: "NAG",
-
-  MOVE_NUM: "MOVE_NUM",
-
-  RAV_START: "RAV_START",
-
-  RAV_END: "RAV_END",
-
-  RESULT: "RESULT",
-
-  SAN: "SAN",
-
-} as const;
-
-
-
-/** Tokenizer compliant with PGN movetext. */
-
-function tokenizeMovetext(raw: string) {
-
-  const s = stripSemicolonComments(raw);
-
-  const rx = /\{[^}]*\}|\$\d+|\d+\.(?:\.\.|…)?|1-0|0-1|1\/2-1\/2|\*|[()]+|[^\s()]+/g;
-
-  const tokens: Array<{ t: string; v: string }> = [];
-
-  let m;
-
-  while ((m = rx.exec(s))) {
-
-    const tok = m[0];
-
-    if (tok[0] === "{") tokens.push({ t: TT.COMMENT, v: tok.slice(1, -1).trim() });
-
-    else if (tok[0] === "$") tokens.push({ t: TT.NAG, v: tok });
-
-    else if (/^\d+\.(?:\.\.|…)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
-
-    else if (tok === "(") tokens.push({ t: TT.RAV_START, v: tok });
-
-    else if (tok === ")") tokens.push({ t: TT.RAV_END, v: tok });
-
-    else if (/^(1-0|0-1|1\/2-1\/2|\*)$/.test(tok)) tokens.push({ t: TT.RESULT, v: tok });
-
-    else tokens.push({ t: TT.SAN, v: tok });
-
-  }
-
-  return tokens;
-
-}
-
-
-
-/* ------------------- Game tree structures ------------------- */
-
-let NODE_ID_SEQ = 1;
-
-function nextId() {
-
-  return NODE_ID_SEQ++;
-
-}
-
-
-
-let LINE_ID_SEQ = 1;
-
-function nextLineId() {
-
-  return LINE_ID_SEQ++;
-
-}
-
-
-
-type PlyNode = {
-
-  id: number;
-
-  san: string;
-
-  sanClean: string;
-
-  fenBefore: string;
-
-  fenAfter: string;
-
-  moveNumber: number;
-
-  isWhite: boolean;
-
-  commentBefore?: string[];
-
-  commentAfter?: string[];
-
-  nags?: string[];
-
-  parent: PlyNode | null;
-
-  variations?: Line[];
-
-  lineRef?: Line;
-
-  indexInLine?: number;
-
-};
-
-
-
-type PlayedMove = {
-
-  san: string;
-
-  color: 'w' | 'b';
-
-  moveNumber: number;
-
-  fen: string;
-
-  fenIndex: number;
-
-  from?: string | null;
-
-  to?: string | null;
-
-  comment?: string;
-
-  variations?: string[];
-
-};
-
-
-
-
-
-
-type PremoveEntry = {
-  from: string;
-  to: string;
-  piece: string;
-  color: 'w' | 'b';
-  promotion?: string;
-  queuedAtStep: number;
-};
-
-type RecordedGame = {
-  id: string;
-  headers: Record<string, string>;
-  moves: PlayedMove[];
-  result: string;
-  startFen?: string;
-};
-
-const RECORD_HEADER_ORDER = ["Event", "Site", "Date", "Round", "White", "Black", "Result"];
-
-type VariationInternal = {
-  anchorIndex: number;
-  startStep: number;
-  startFen: string;
-  sanMoves: string[];
-  comments: string[];
-  fenList: string[];
-  chess: Chess;
-  lastMove: { from: string; to: string } | null;
-};
-
-type VariationState = {
-  anchorIndex: number;
-  startFen: string;
-  sanMoves: string[];
-  comments: string[];
-  currentFen: string;
-  lastMove: { from: string; to: string } | null;
-};
-
-function formatPgnDate(date: Date = new Date()) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}.${m}.${d}`;
-}
-
-function normalizePgnDate(input: string) {
-  const trimmed = (input || "").trim();
-  if (!trimmed) return "????.??.??";
-  const re = /^(\d{4})[.\-/]?(\d{1,2})[.\-/]?(\d{1,2})$/;
-  const m = trimmed.match(re);
-  if (m) {
-    return `${m[1]}.${m[2].padStart(2, "0")}.${m[3].padStart(2, "0")}`;
-  }
-  return trimmed.replace(/\s+/g, " ");
-}
-
-function sanitizePgnComment(text: string) {
-  return text.replace(/\s+/g, " ").replace(/[{}]/g, "").trim();
-}
-
-function movesToMovetext(moves: PlayedMove[], result: string) {
-  if (!moves.length) return result || "*";
-  const parts: string[] = [];
-  let lastNumber = 0;
-  moves.forEach((move) => {
-    const cleaned = move.comment ? sanitizePgnComment(move.comment) : "";
-    const comment = cleaned ? ` {${cleaned}}` : "";
-    const variations = Array.isArray(move.variations) ? move.variations.filter((v) => !!v && !!String(v).trim()) : [];
-    const variationSuffix = variations
-      .map((raw) => {
-        const trimmed = String(raw || "").trim();
-        if (!trimmed) return "";
-        const withoutParens = trimmed.startsWith("(") && trimmed.endsWith(")")
-          ? trimmed.slice(1, -1).trim()
-          : trimmed;
-        return withoutParens ? ` (${withoutParens})` : "";
-      })
-      .join("");
-    const segment = `${move.san}${comment}${variationSuffix}`;
-    if (move.color === "w") {
-      parts.push(`${move.moveNumber}. ${segment}`);
-    } else if (parts.length && lastNumber === move.moveNumber) {
-      parts[parts.length - 1] = `${parts[parts.length - 1]} ${segment}`;
-    } else {
-      parts.push(`${move.moveNumber}... ${segment}`);
-    }
-    lastNumber = move.moveNumber;
-  });
-  const trimmedResult = (result || "*").trim() || "*";
-  return `${parts.join(" ")} ${trimmedResult}`.trim();
-}
-
-function buildRecordedGamePgn(headers: Record<string, string>, moves: PlayedMove[], result: string) {
-  const headerLines: string[] = [];
-  const extraHeaders: string[] = [];
-  const normalizedResult = (result || headers.Result || "*").trim() || "*";
-
-  RECORD_HEADER_ORDER.forEach((key) => {
-    let value = headers[key] ?? "";
-    if (key === "Result") value = normalizedResult;
-    else if (key === "Date") value = normalizePgnDate(value);
-    const finalValue = value.trim() ? value.trim() : key === "Date" ? "????.??.??" : "?";
-    headerLines.push(`[${key} "${finalValue}"]`);
-  });
-
-  Object.keys(headers)
-    .filter((key) => !RECORD_HEADER_ORDER.includes(key))
-    .sort()
-    .forEach((key) => {
-      const val = (headers[key] ?? "").trim();
-      if (val) extraHeaders.push(`[${key} "${val}"]`);
-    });
-
-  const movetext = movesToMovetext(moves, normalizedResult);
-  return [...headerLines, ...extraHeaders].join("\n") + `\n\n${movetext}`;
-}
-
-function recordedGamesToPgn(games: RecordedGame[]) {
-  return games
-    .map((game) => buildRecordedGamePgn(game.headers, game.moves, game.result))
-    .filter((chunk) => chunk && chunk.trim())
-    .join("\n\n")
-    .trim();
-}
-
-
-function formatVariationSan(startFen: string, sanMoves: string[], comments?: (string | null | undefined)[]) {
-  if (!sanMoves.length) return "";
-  const tokens: string[] = [];
-  const parts = startFen.split(" ");
-  const sideToMove = parts[1] === "b" ? "b" : "w";
-  let currentColor = sideToMove;
-  let moveNumber = parseInt(parts[5], 10);
-  if (!Number.isFinite(moveNumber)) moveNumber = 1;
-  sanMoves.forEach((sanRaw, idx) => {
-    const san = String(sanRaw || "").trim();
-    if (!san) return;
-    const commentRaw = comments ? comments[idx] ?? "" : "";
-    const commentClean = commentRaw ? sanitizePgnComment(commentRaw) : "";
-    const commentSuffix = commentClean ? ` {${commentClean}}` : "";
-    if (currentColor === "w") {
-      tokens.push(`${moveNumber}. ${san}${commentSuffix}`);
-      currentColor = "b";
-    } else {
-      if (tokens.length && !tokens[tokens.length - 1].includes("...")) {
-        tokens[tokens.length - 1] = `${tokens[tokens.length - 1]} ${san}${commentSuffix}`;
-      } else {
-        tokens.push(`${moveNumber}... ${san}${commentSuffix}`);
-      }
-      moveNumber += 1;
-      currentColor = "w";
-    }
-  });
-  return tokens.join(" ").replace(/\s+/g, " ").trim();
-}
-
-
-
-function defaultRecordHeaders(): Record<string, string> {
-
-  return {
-
-    Event: "Casual Game",
-
-    Site: "Local",
-
-    Date: formatPgnDate(),
-
-    Round: "1",
-
-    White: "",
-
-    Black: "",
-
-  };
-
-}
-
-type Line = {
-
-  lid: number;
-
-  startFen: string;
-
-  nodes: PlyNode[];
-
-  preVariations?: Line[];
-
-};
-
-
-
-function sideFromFen(fen: string): "w" | "b" {
-
-  try {
-
-    return fen.split(" ")[1] === "b" ? "b" : "w";
-
-  } catch {
-
-    return "w";
-
-  }
-
-}
-
-
-
-function parseMovetextToTree(moveText: string, startFen?: string): { main: Line; mainlineFlat: PlyNode[] } {
-
-  NODE_ID_SEQ = 1;
-
-  LINE_ID_SEQ = 1;
-
-
-
-  const tokens = tokenizeMovetext(moveText);
-
-
-
-  function mkChess(fen?: string) {
-
-    try {
-
-      return new Chess(fen);
-
-    } catch {
-
-      return new Chess();
-
-    }
-
-  }
-
-
-
-  function parseLine(idx: number, startFenLocal: string): { line: Line; idx: number } {
-
-    const chess = mkChess(startFenLocal);
-
-    const line: Line = { lid: nextLineId(), startFen: startFenLocal, nodes: [], preVariations: [] };
-
-
-
-    let pendingBefore: string[] = [];
-
-    let lastWasMove = false;
-
-
-
-    while (idx < tokens.length) {
-
-      const tok = tokens[idx];
-
-      if (tok.t === TT.RAV_END || tok.t === TT.RESULT) {
-
-        if (tok.t === TT.RAV_END) idx++;
-
-        break;
-
-      }
-
-
-
-      if (tok.t === TT.RAV_START) {
-
-        const lastNode = line.nodes.length ? line.nodes[line.nodes.length - 1] : null;
-
-        let anchorFen = lastNode ? lastNode.fenAfter : line.startFen;
-
-
-
-        let j = idx + 1;
-
-        while (j < tokens.length && (tokens[j].t === TT.COMMENT || tokens[j].t === TT.NAG)) j++;
-
-
-
-        if (j < tokens.length && tokens[j].t === TT.MOVE_NUM && lastNode) {
-
-          const wantsBlack = /…|\.\.\.$/.test(tokens[j].v);
-
-          const desired: "w" | "b" = wantsBlack ? "b" : "w";
-
-          const current = sideFromFen(anchorFen);
-
-          if (current !== desired) {
-
-            anchorFen = lastNode.fenBefore;
-
-          }
-
-        }
-
-
-
-        idx++;
-
-        const { line: varLine, idx: nextIdx } = parseLine(idx, anchorFen);
-
-        idx = nextIdx;
-
-
-
-        if (line.nodes.length === 0) line.preVariations!.push(varLine);
-
-        else {
-
-          const holder = line.nodes[line.nodes.length - 1];
-
-          (holder.variations || (holder.variations = [])).push(varLine);
-
-        }
-
-        lastWasMove = false;
-
-        continue;
-
-      }
-
-
-
-      if (tok.t === TT.COMMENT) {
-
-        if (lastWasMove && line.nodes.length) {
-
-          const nd = line.nodes[line.nodes.length - 1];
-
-          nd.commentAfter = (nd.commentAfter || []).concat(tok.v);
-
-        } else pendingBefore.push(tok.v);
-
-        idx++;
-
-        continue;
-
-      }
-
-
-
-      if (tok.t === TT.NAG) {
-
-        if (line.nodes.length) {
-
-          const nd = line.nodes[line.nodes.length - 1];
-
-          nd.nags = (nd.nags || []).concat(tok.v);
-
-        }
-
-        idx++;
-
-        continue;
-
-      }
-
-
-
-      if (tok.t === TT.MOVE_NUM) {
-
-        idx++;
-
-        lastWasMove = false;
-
-        continue;
-
-      }
-
-
-
-      if (tok.t === TT.SAN) {
-
-        const san = tok.v;
-
-        const sanClean = sanitizeSANForMove(san);
-
-
-
-        const fenBefore = chess.fen();
-
-        const fullmove = parseInt(fenBefore.split(" ")[5], 10) || 1;
-
-        const isWhite = chess.turn() === "w";
-
-
-
-        try {
-
-          const mv = chess.move(sanClean, { sloppy: true });
-
-          if (!mv) throw new Error("illegal");
-
-        } catch {
-
-          idx++;
-
-          continue;
-
-        }
-
-
-
-        const fenAfter = chess.fen();
-
-
-
-        const node: PlyNode = {
-
-          id: nextId(),
-
-          san,
-
-          sanClean,
-
-          fenBefore,
-
-          fenAfter,
-
-          moveNumber: fullmove,
-
-          isWhite,
-
-          parent: line.nodes.length ? line.nodes[line.nodes.length - 1] : null,
-
-          commentBefore: pendingBefore.length ? pendingBefore.slice() : undefined,
-
-        };
-
-        node.parent = line.nodes.length ? line.nodes[line.nodes.length - 1] : null;
-
-        pendingBefore = [];
-
-        lastWasMove = true;
-
-        line.nodes.push(node);
-
-        idx++;
-
-        continue;
-
-      }
-
-
-
-      idx++;
-
-    }
-
-
-
-    line.nodes.forEach((n, i) => {
-
-      n.lineRef = line;
-
-      n.indexInLine = i;
-
-    });
-
-
-
-    return { line, idx };
-
-  }
-
-
-
-  const startFenActual = (() => {
-
-    try {
-
-      const c = startFen ? new Chess(startFen) : new Chess();
-
-      return c.fen();
-
-    } catch {
-
-      return new Chess().fen();
-
-    }
-
-  })();
-
-
-
-  const { line: main } = parseLine(0, startFenActual);
-
-  const mainlineFlat: PlyNode[] = [...main.nodes];
-
-  return { main, mainlineFlat };
-
-}
-
-
-
-/* =====================================================
-
-   UI styles (immutati, con micro-estensioni)
-
-   ===================================================== */
-
 const styles = {
 
-  app: {
-
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-
-    background: "#f7f7fb",
-
-    minHeight: "100vh",
-
-    color: "#111827",
-
-  },
-
-  container: { maxWidth: 1200, margin: "0 auto", padding: 16 },
-
-  header: {
-
-    display: "flex",
-
-    gap: 12,
-
-    alignItems: "center",
-
-    justifyContent: "space-between",
-
-    marginBottom: 12,
-
-  },
-
   title: { fontSize: 24, fontWeight: 800 },
-
-  controlsRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" as const },
-
-  engineRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap" as const },
-
-
-
-  btn: {
-
-    padding: "8px 12px",
-
-    borderRadius: 12,
-
-    borderWidth: 1,
-
-    borderStyle: "solid" as const,
-
-    borderColor: "#d1d5db",
-
-    background: "white",
-
-    color: "#111827",
-
-    cursor: "pointer",
-
-    fontWeight: 600,
-
-    whiteSpace: "nowrap" as const,
-
-    display: "inline-flex",
-
-    alignItems: "center",
-
-    gap: 6,
-
-  },
 
   btnPrimary: {
 
@@ -957,92 +114,6 @@ const styles = {
     color: "#191a1bff",
 
     cursor: "not-allowed" as const,
-
-  },
-
-
-
-  sectionGrid: {
-
-    display: "grid",
-
-    gridTemplateColumns: "1fr 1fr",
-
-    gap: 16,
-
-    marginBottom: 16,
-
-  },
-
-  card: {
-
-    background: "white",
-
-    borderWidth: 1,
-
-    borderStyle: "solid" as const,
-
-    borderColor: "#e5e7eb",
-
-    borderRadius: 16,
-
-    padding: 12,
-
-    overflow: "auto",
-
-    resize: "vertical" as const,
-
-    minHeight: 120,
-
-  },
-
-
-
-  layout: { display: "flex", alignItems: "stretch", gap: 8, minHeight: "50vh" },
-
-  left: { display: "flex", flexDirection: "column", gap: 8 },
-
-  splitter: {
-
-    width: 10,
-
-    cursor: "col-resize",
-
-    alignSelf: "stretch",
-
-    background: "#e5e7eb",
-
-    borderRadius: 6,
-
-  },
-
-  splitterActive: { background: "#c7d2fe" },
-
-
-
-  right: {
-
-    flex: 1,
-
-    height: "70vh",
-
-    overflow: "auto" as const,
-
-    resize: "vertical" as const,
-
-    background: "white",
-
-    borderWidth: 1,
-
-    borderStyle: "solid" as const,
-
-    borderColor: "#e5e7eb",
-
-    borderRadius: 16,
-
-    padding: 12,
-
-    minHeight: 220,
 
   },
 
@@ -1310,175 +381,11 @@ const styles = {
 
   tokenComment: { fontStyle: "italic", color: "#15803d" },
 
-  tokenParen: {
-
-    background: "#f3f4f6",
-
-    borderRadius: 8,
-
-    padding: "2px 6px",
-
-    marginRight: 6,
-
-    display: "inline-block",
-
-  },
-
-
-
   feedbackBad: { color: "#b91c1c", fontWeight: 700 },
 
   feedbackGood: { color: "#15803d", fontWeight: 700 },
 
 
-
-  liveMovesPanel: {
-
-    marginTop: 16,
-
-    border: "1px solid #d1d5db",
-
-    borderRadius: 14,
-
-    background: "#fff",
-
-    padding: 16,
-
-    display: "flex",
-
-    flexDirection: "column",
-
-    gap: 14,
-
-  },
-
-
-
-  liveMovesHeader: {
-
-    display: "flex",
-
-    alignItems: "center",
-
-    justifyContent: "space-between",
-
-    fontSize: 14,
-
-    fontWeight: 600,
-
-    gap: 12,
-
-  },
-
-
-
-  liveMovesControls: { display: "flex", gap: 12 },
-
-
-
-  liveMovesList: {
-
-    display: "flex",
-
-    flexWrap: "wrap",
-
-    gap: 8,
-
-    alignItems: "center",
-
-  },
-
-
-
-  liveMoveChip: {
-
-    display: "inline-flex",
-
-    alignItems: "baseline",
-
-    gap: 6,
-
-    padding: "2px 4px",
-
-    borderRadius: 6,
-
-    cursor: "pointer",
-
-    color: "#111827",
-
-    fontSize: 13,
-
-    fontWeight: 500,
-
-    lineHeight: 1.4,
-
-    transition: "color 0.15s ease",
-
-  },
-
-
-
-  liveMoveActive: {
-
-    color: "#2563eb",
-
-    fontWeight: 700,
-
-  },
-
-
-
-  liveMoveTurn: { fontSize: 13, color: "#111827", fontWeight: 500 },
-
-
-
-  liveMoveSan: { fontSize: 13, fontWeight: 500 },
-
-
-
-  liveMovesEmpty: { fontSize: 13, color: "#6b7280" },
-
-
-
-  liveMoveBtn: {
-
-    padding: "9px 16px",
-
-    borderRadius: 12,
-
-    border: "1px solid #c7d2fe",
-
-    background: "#eef2ff",
-
-    cursor: "pointer",
-
-    fontSize: 15,
-
-    fontWeight: 600,
-
-    color: "#1f2937",
-
-    transition: "background 0.15s ease, color 0.15s ease",
-
-  },
-
-
-
-  liveMoveBtnDisabled: { opacity: 0.55, cursor: "not-allowed", color: "#9ca3af" },
-
-
-
-  row: {
-
-    display: "grid",
-
-    gridTemplateColumns: "60px 1fr",
-
-    alignItems: "baseline",
-
-    marginBottom: 4,
-
-  },
 
   noCol: {
 
@@ -1573,32 +480,6 @@ const styles = {
   variantCount: { fontWeight: 700, color: "#111827" },
 
   variantList: { padding: "6px 8px" },
-
-  variantRow: { display: "block", padding: "2px 0", fontSize: 13 },
-
-  variantBullet: { display: "inline-block", width: 14, color: "#6b7280" },
-
-  variantMove: { marginRight: 6, cursor: "pointer", fontWeight: 400 as const },
-
-  variantMoveDim: { color: "#6b7280", fontWeight: 400 as const },
-
-
-
-  variantLineHeader: {
-
-    display: "flex",
-
-    alignItems: "baseline",
-
-    gap: 8,
-
-    cursor: "pointer",
-
-    userSelect: "none" as const,
-
-    padding: "2px 0",
-
-  },
 
   variantPreview: { fontSize: 13, fontWeight: 400 as const },
 
@@ -1742,6 +623,8 @@ const styles = {
 
 
 
+const suggestionColors = ["#20664b", "#1d4ed8", "#b45309", "#7e22ce", "#be185d"] as const;
+
 const variationIndent = (level: number) => ({ marginLeft: level * 16 });
 
 
@@ -1770,6 +653,27 @@ export default function App() {
 
   const [isMobile, setIsMobile] = useState(() => detectMobile());
 
+  const [desktopGames, setDesktopGames] = useState<GameSummary[]>([]);
+  const [desktopIndex, setDesktopIndex] = useState(0);
+  const gameCount = isMobile ? games.length : desktopGames.length;
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("study");
+  const [autoplay, setAutoplay] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importVersion, setImportVersion] = useState(0);
+  const pgnWorker = useRef<Worker | null>(null);
+  const candidateWorker = useRef<Worker | null>(null);
+  const requestId = useRef(0);
+  const loadedIndex = useRef(0);
+
+  useEffect(() => () => {
+    requestId.current++;
+    pgnWorker.current?.terminate();
+    candidateWorker.current?.terminate();
+    pgnWorker.current = null;
+    candidateWorker.current = null;
+  }, [isMobile]);
+
   const [mobileTab, setMobileTab] = useState<'moves' | 'pgn' | 'engine' | 'settings'>('moves');
 
   const [mobileEngineSettingsOpen, setMobileEngineSettingsOpen] = useState(false);
@@ -1787,7 +691,7 @@ export default function App() {
 
 
 
-  const [fenHistory, setFenHistory] = useState<string[]>([new Chess().fen()]);
+  const [fenHistory, setFenHistory] = useState<string[]>(() => [DEFAULT_POSITION]);
 
   const [step, setStep] = useState(0);
 
@@ -1832,7 +736,7 @@ export default function App() {
   const trainingAutoMoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingTrainingAutoMoveRef = useRef(false);
 
-  const baseLiveFen = fenHistory[step] || new Chess().fen();
+  const baseLiveFen = fenHistory[step] || DEFAULT_POSITION;
   const liveFen = variationSession?.currentFen ?? baseLiveFen;
   const variationActive = !!variationSession;
 
@@ -1939,113 +843,19 @@ export default function App() {
 
   // === dimensioni/resize ===
 
-  const [leftWidth, setLeftWidth] = useState(440);
-
-  const layoutRef = useRef<HTMLDivElement | null>(null);
-
-  const [dragging, setDragging] = useState(false);
-
-  const draggingRef = useRef(false);
-
-  const startXRef = useRef(0);
-
-  const startWRef = useRef(440);
-
-  const minLeft = 320;
-
-  let maxLeft = 820;
-
-
-
-  const onSplitDown = (e: React.MouseEvent) => {  
-
-    draggingRef.current = true;
-
-    try { document.body.style.userSelect = "none"; document.body.style.cursor = "col-resize"; } catch {}
-
-    setDragging(true);
-
-    startXRef.current = e.clientX;
-
-    startWRef.current = leftWidth;
-
-    window.addEventListener("mousemove", onSplitMove);
-
-    window.addEventListener("mouseup", onSplitUp);
-
-    e.preventDefault();
-
-  };
-
-  const onSplitMove = (e: MouseEvent) => {
-
-    if (!draggingRef.current) return;
-
-    const dx = e.clientX - startXRef.current;
-
-    const containerW = layoutRef.current?.clientWidth || window.innerWidth;
-
-    const rightMin = 360; // minimo spazio pannello destro
-
-    const dynMaxLeft = Math.max(minLeft, Math.min(containerW - rightMin, 1200));
-
-    const next = Math.min(dynMaxLeft, Math.max(minLeft, startWRef.current + dx));
-
-    setLeftWidth(next);
-
-  };
-
-  const onSplitUp = () => {
-
-    setDragging(false);
-
-    draggingRef.current = false;
-
-    try { document.body.style.userSelect = ""; document.body.style.cursor = ""; } catch {}
-
-    window.removeEventListener("mousemove", onSplitMove);
-
-    window.removeEventListener("mouseup", onSplitUp);
-
-  };
-
-  useEffect(() => {
-
-    return () => {
-
-      window.removeEventListener("mousemove", onSplitMove);
-
-      window.removeEventListener("mouseup", onSplitUp);
-
-    };
-
-  }, []);
-
-
-
-  // Board size (slider) + clamp alla colonna sinistra
-
-  const [boardSize, setBoardSize] = useState(400);
-
   const boardCellRef = useRef<HTMLDivElement | null>(null);
-
-  const [autoBoardWidth, setAutoBoardWidth] = useState(400);
 
   const [mobileBoardSize, setMobileBoardSize] = useState(320); // Dimensione predefinita per mobile
 
-  
+
 
   // Calcola la dimensione ottimale per la scacchiera in base al dispositivo
 
   const calculateOptimalBoardSize = () => {
 
-    if (!isMobile) {
+    if (!isMobile) return 400;
 
-      return Math.min(boardSize, Math.floor(autoBoardWidth));
 
-    }
-
-    
 
     // Per dispositivi mobile, adatta la dimensione in base allo schermo
 
@@ -2053,13 +863,13 @@ export default function App() {
 
     const screenHeight = window.innerHeight;
 
-    
+
 
     // Calcola dimensione massima possibile mantenendo le proporzioni
 
     const maxSize = Math.min(screenWidth - 40, screenHeight - 300);
 
-    
+
 
     // Limita a dimensioni ragionevoli per mobile
 
@@ -2067,7 +877,7 @@ export default function App() {
 
   };
 
-  
+
 
   const boardRenderWidth = calculateOptimalBoardSize();
 
@@ -2079,41 +889,27 @@ export default function App() {
 
     const el = boardCellRef.current;
 
-    if (!el) return;
-
-    
+    if (!isMobile || !el) return;
 
     const updateBoardSize = () => {
 
-      if (isMobile) {
-
-        const newSize = calculateOptimalBoardSize();
-
-        setMobileBoardSize(newSize);
-
-      } else {
-
-        const w = Math.max(0, Math.floor(el.clientWidth));
-
-        setAutoBoardWidth(w || 0);
-
-      }
+      setMobileBoardSize(calculateOptimalBoardSize());
 
     };
 
-    
+
 
     const ro = new ResizeObserver(updateBoardSize);
 
     ro.observe(el);
 
-    
+
 
     // Inizializza
 
     updateBoardSize();
 
-    
+
 
     // Aggiungi listener per l'orientamento del dispositivo
 
@@ -2123,25 +919,25 @@ export default function App() {
 
     };
 
-    
+
 
     window.addEventListener('resize', updateBoardSize);
 
     window.addEventListener('orientationchange', handleOrientationChange);
 
-    
 
-    return () => { 
 
-      try { 
+    return () => {
 
-        ro.disconnect(); 
+      try {
+
+        ro.disconnect();
 
         window.removeEventListener('resize', updateBoardSize);
 
         window.removeEventListener('orientationchange', handleOrientationChange);
 
-      } catch {} 
+      } catch {}
 
     };
 
@@ -2204,7 +1000,7 @@ export default function App() {
   const [trainingColor, setTrainingColor] = useState('auto');
   const [trainingRandomGame, setTrainingRandomGame] = useState(false);
   const pickRandomTrainingGame = useCallback(() => {
-    if (!games.length || randomPickBusyRef.current) return;
+    if (!gameCount || randomPickBusyRef.current) return;
 
     randomPickBusyRef.current = true;
 
@@ -2212,17 +1008,17 @@ export default function App() {
 
     let nextIndex = prevIndex;
 
-    if (games.length === 1) {
+    if (gameCount === 1) {
 
       nextIndex = 0;
 
     } else {
 
-      nextIndex = Math.floor(Math.random() * games.length);
+      nextIndex = Math.floor(Math.random() * gameCount);
 
       if (nextIndex === prevIndex) {
 
-        nextIndex = (nextIndex + 1 + Math.floor(Math.random() * (games.length - 1))) % games.length;
+        nextIndex = (nextIndex + 1 + Math.floor(Math.random() * (gameCount - 1))) % gameCount;
 
       }
 
@@ -2234,7 +1030,7 @@ export default function App() {
 
     randomPickBusyRef.current = false;
 
-  }, [games]);
+  }, [gameCount]);
   const [trainingShowTranscript, setTrainingShowTranscript] = useState(false);
 
   const [feedback, setFeedback] = useState<null | { ok: boolean; text: string }>(null);
@@ -2270,10 +1066,10 @@ export default function App() {
 
   useEffect(() => {
     if (!training || !trainingRandomGame) return;
-    if (!games.length) return;
+    if (!gameCount) return;
     pickRandomTrainingGame();
     setTrainingShowTranscript(false);
-  }, [games, training, trainingRandomGame, pickRandomTrainingGame]);
+  }, [gameCount, training, trainingRandomGame, pickRandomTrainingGame]);
 
 
 
@@ -2422,7 +1218,7 @@ export default function App() {
 
   };
 
-  const hidePreview = () => setPreview((p) => ({ ...p, visible: false }));
+  const hidePreview = useCallback(() => setPreview(p => p.visible ? { ...p, visible: false } : p), []);
 
 
 
@@ -2447,6 +1243,8 @@ export default function App() {
     const activeEl = pane.querySelector('[data-active="true"]') as HTMLElement | null;
 
     if (!activeEl) return;
+    if (!isMobile && activeEl.getBoundingClientRect().top >= pane.getBoundingClientRect().top &&
+        activeEl.getBoundingClientRect().bottom <= pane.getBoundingClientRect().bottom) return;
 
     // Scroll only the PGN pane, keeping the rest of the page steady
     const paneRect = pane.getBoundingClientRect();
@@ -2581,7 +1379,7 @@ export default function App() {
 
     setOptionSquares({});
 
-  }, [games, gameIndex]);
+  }, [games, gameIndex, isMobile]);
 
 
 
@@ -2667,7 +1465,9 @@ export default function App() {
 
     setPlayedMoves((prev) => {
 
-      const base = prev.slice(0, Math.max(0, stepRef.current));
+      const base = isMobile
+        ? prev.slice(0, Math.max(0, stepRef.current))
+        : prev.filter(move => move.fenIndex <= stepRef.current);
 
       let nextIndex = stepRef.current;
 
@@ -2685,7 +1485,8 @@ export default function App() {
 
           color: move.color === 'w' ? 'w' : 'b',
 
-          moveNumber: typeof move.moveNumber === "number" ? move.moveNumber : Math.ceil(nextIndex / 2),
+          moveNumber: !isMobile && move.before ? Number(move.before.split(" ")[5])
+            : typeof move.moveNumber === "number" ? move.moveNumber : Math.ceil(nextIndex / 2),
 
           fen,
 
@@ -2705,7 +1506,7 @@ export default function App() {
 
     });
 
-  }, []);
+  }, [isMobile]);
 
 
 
@@ -2742,6 +1543,18 @@ export default function App() {
 
   const lastFromTo = useMemo(() => {
 
+    if (!isMobile && !variationSession) {
+      if (step === 0) return null;
+      const node = currentLinePlies[step - 1];
+      if (node?.fenAfter === fenHistory[step]) return { from: node.from, to: node.to };
+      const recorded = playedMoves.find(move => move.fenIndex === step);
+      if (recorded?.fen === fenHistory[step]) return { from: recorded.from, to: recorded.to };
+      try {
+        const chess = new Chess(fenHistory[step - 1]);
+        const move = chess.moves({ verbose: true }).find(move => move.after === fenHistory[step]);
+        return move ? { from: move.from, to: move.to } : null;
+      } catch { return null; }
+    }
     if (variationSession && variationSession.sanMoves.length) {
       if (variationSession.lastMove) return variationSession.lastMove;
       try {
@@ -2815,7 +1628,7 @@ export default function App() {
 
     }
 
-  }, [variationSession, fenHistory, step]);
+  }, [variationSession, fenHistory, step, currentLinePlies, playedMoves, isMobile]);
 
 
 
@@ -2919,13 +1732,17 @@ export default function App() {
 
      ===================================================== */
 
-  const { ready, thinking, lines, engineErr, analyze, stop } = useStockfish();
-
   const [engineOn, setEngineOn] = useState(false);
-
+  const legacyEngine = useStockfish(undefined, isMobile);
+  const desktopEngine = useDesktopEngine(!isMobile && engineOn);
+  const { ready, thinking, lines: reportedLines, engineErr, analyze, stop } = isMobile ? legacyEngine : desktopEngine;
+  const lines = isMobile || desktopEngine.resultFen === liveFen ? reportedLines : [];
   const [engineDepth, setEngineDepth] = useState(18);
 
   const [engineMPV, setEngineMPV] = useState(3);
+  const [suggestionCount, setSuggestionCount] = useState(0);
+  const analysisMultiPv = isMobile ? engineMPV : Math.max(engineMPV, suggestionCount);
+  const playingMultiPv = isMobile ? 0 : suggestionCount;
 
   // === Play vs Engine ===
 
@@ -3021,7 +1838,7 @@ export default function App() {
 
   const isEnglish = language === "en";
 
-  const t = (it: string, en: string) => (isEnglish ? en : it);
+  const t = useCallback((it: string, en: string) => (isEnglish ? en : it), [isEnglish]);
 
   const addRecordedGame = useCallback(() => {
 
@@ -3033,8 +1850,9 @@ export default function App() {
 
     }
 
-    const snapshotMoves = playedMoves.map((mv) => ({
+    const snapshotMoves = playedMoves.map((mv, index) => ({
       ...mv,
+      fenIndex: isMobile ? mv.fenIndex : index + 1,
       variations: mv.variations ? mv.variations.slice() : undefined,
     }));
 
@@ -3042,7 +1860,15 @@ export default function App() {
 
     const normalizedResult = (recordResult || "*").trim() || "*";
 
-    const startFenValue = fenHistory[0] || new Chess().fen();
+    const startFenValue = fenHistory[isMobile ? 0 : playedMoves[0].fenIndex - 1] || DEFAULT_POSITION;
+    if (!isMobile) {
+      delete snapshotHeaders.SetUp;
+      delete snapshotHeaders.FEN;
+      if (startFenValue !== DEFAULT_POSITION) {
+        snapshotHeaders.SetUp = "1";
+        snapshotHeaders.FEN = startFenValue;
+      }
+    }
 
     if (editingGameId) {
 
@@ -3086,7 +1912,7 @@ export default function App() {
 
     flash(true, t("Partita aggiunta al tuo PGN personalizzato.", "Game added to your custom PGN."));
 
-  }, [playedMoves, recordHeaders, recordResult, flash, fenHistory, editingGameId, t]);
+  }, [playedMoves, recordHeaders, recordResult, flash, fenHistory, editingGameId, isMobile, t]);
 
   const removeRecordedGame = useCallback(
 
@@ -3533,6 +2359,19 @@ export default function App() {
 
   const [whiteOrientation, setWhiteOrientation] = useState(true);
 
+  useEffect(() => {
+    if (isMobile) return;
+    try {
+      setWhiteOrientation(localStorage.getItem("pgnviewer.desktop.orientation") !== "black");
+    } catch {}
+  }, [isMobile]);
+
+  const flipDesktopBoard = () => {
+    const next = !whiteOrientation;
+    setWhiteOrientation(next);
+    try { localStorage.setItem("pgnviewer.desktop.orientation", next ? "white" : "black"); } catch {}
+  };
+
 
 
   // analizza quando cambia la posizione (se engine ON)
@@ -3541,21 +2380,31 @@ export default function App() {
 
     if (!engineOn || !ready) return;
 
-    analyze(liveFen, { depth: engineDepth, multipv: engineMPV });
+    if (!isMobile && playVsEngine) {
+      const position = new Chess(liveFen);
+      const playable = !position.isGameOver();
+      const shouldMove = playable && position.turn() === engineSide;
+      setEngineMovePending(shouldMove);
+      if (playable && (shouldMove || playingMultiPv > 0)) {
+        analyze(liveFen, { depth: engineDepth, multipv: Math.max(1, playingMultiPv) });
+      } else stop();
+      return;
+    }
+    analyze(liveFen, { depth: engineDepth, multipv: analysisMultiPv });
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
 
-  }, [engineOn, ready, liveFen, engineDepth, engineMPV]);
+  }, [engineOn, ready, liveFen, engineDepth, analysisMultiPv, playVsEngine ? playingMultiPv : 0, isMobile, isMobile ? null : playVsEngine, isMobile ? null : engineSide]);
 
 
 
-  
+
 
   // === VS Engine: trigger analisi solo quando è il turno del motore e serve ===
 
   useEffect(() => {
 
-    if (!playVsEngine || !engineOn || !ready) return;
+    if (!isMobile || !playVsEngine || !engineOn || !ready) return;
 
     try {
 
@@ -3589,7 +2438,7 @@ export default function App() {
 
     if (!engineMovePending) return;
 
-    if (thinking) return;
+    if (thinking || (!isMobile && desktopEngine.resultFen !== liveFen)) return;
 
     try {
 
@@ -3662,6 +2511,23 @@ export default function App() {
   }, [lines]);
 
 
+
+  const suggestions = useMemo(() => {
+    if (isMobile || !engineOn || suggestionCount === 0) return [];
+    const paths = new Set<string>();
+    return lines.flatMap(line => {
+      const color = suggestionColors[line.id - 1];
+      const move = line.pvUci?.[0];
+      const san = line.pvSan?.[0];
+      if (!color || line.id > suggestionCount || !move || !san) return [];
+      const path = move.slice(0, 4);
+      if (paths.has(path)) return [];
+      paths.add(path);
+      return [{
+        rank: line.id, san, color, startSquare: path.slice(0, 2), endSquare: path.slice(2),
+      }];
+    });
+  }, [engineOn, isMobile, lines, suggestionCount]);
 
   // arrows per il board
 
@@ -3801,7 +2667,7 @@ export default function App() {
 
     <EnginePanel
 
-      lines={lines}
+      lines={isMobile ? lines : lines.slice(0, engineMPV)}
 
       thinking={thinking}
 
@@ -3815,7 +2681,8 @@ export default function App() {
 
       onPreviewFen={showPreview}
 
-      onPreviewMove={movePreview}
+      onPreviewMove={isMobile ? movePreview : undefined}
+      useFenMoveNumbers={!isMobile}
 
       onHidePreview={hidePreview}
 
@@ -4059,13 +2926,14 @@ export default function App() {
 
 
 
-  
+
 
   // create a chess game using a ref to always have access to the latest game state
 
-  const chessGameRef = useRef(new Chess(liveFen));
+  const [initialChess] = useState(() => new Chess(liveFen));
+  const chessGameRef = useRef(initialChess);
 
-  
+
 
   // update the chess game ref when liveFen changes
 
@@ -4081,7 +2949,7 @@ export default function App() {
 
   }, [liveFen]);
 
-  
+
 
   // get the move options for a square to show valid moves
 
@@ -4159,7 +3027,7 @@ export default function App() {
 
   }
 
-  
+
 
   // handle square click for click and move
 
@@ -4338,7 +3206,7 @@ export default function App() {
 
   };
 
-  
+
 
   // ==== react-chessboard v5: onPieceDrop(args) -> boolean
 
@@ -4348,7 +3216,7 @@ export default function App() {
 
     if (sourceSquare === targetSquare) return false; // snapback: nessuna mossa
 
-    
+
 
     try {
 
@@ -4642,7 +3510,7 @@ export default function App() {
 
           if (engineOn) {
 
-            if (!thinking) analyze(baseFen, { depth: engineDepth, multipv: Math.max(1, engineMPV) });
+            if (!thinking) analyze(baseFen, { depth: engineDepth, multipv: analysisMultiPv });
 
             setShowBestOnce(true);
 
@@ -5595,11 +4463,11 @@ export default function App() {
 
   const flow = useMemo(() => {
 
-    if (!treeMain) return null;
+    if (!isMobile || !treeMain) return null;
 
     return <RenderMain line={treeMain} />;
 
-  }, [treeMain, activeNodeId, fenHistory, step, variantView, openVars, openLines]);
+  }, [isMobile, treeMain, activeNodeId, fenHistory, step, variantView, openVars, openLines]);
 
   const transcriptHidden = training && trainingRandomGame && !trainingShowTranscript;
 
@@ -5609,6 +4477,7 @@ export default function App() {
 
   useEffect(() => {
 
+    if (!isMobile) return;
     const onKey = (e: KeyboardEvent) => {
 
       const target = e.target as HTMLElement | null;
@@ -5653,7 +4522,7 @@ export default function App() {
 
     return () => window.removeEventListener("keydown", onKey);
 
-  }, [fenHistory.length]);
+  }, [fenHistory.length, isMobile]);
 
 
 
@@ -6460,6 +5329,163 @@ export default function App() {
   };
 
 
+
+  const applyDesktopGame = useCallback((game: Extract<PgnReply, { type: "game" }>["game"], index: number) => {
+    clearVariationSession();
+    clearTrainingAutoMoveTimer();
+    pendingTrainingAutoMoveRef.current = false;
+    clearPremoves();
+    setPlayVsEngine(false);
+    loadedIndex.current = index;
+    setDesktopIndex(index);
+    setHeaders(game.headers);
+    setTreeMain(game.main);
+    setMainlinePlies(game.mainlineFlat);
+    setCurrentLinePlies(game.mainlineFlat);
+    setFenHistory([game.main.startFen, ...game.main.nodes.map(node => node.fenAfter)]);
+    setPlayedMoves([]);
+    stepRef.current = 0;
+    setStep(0);
+    setActiveNodeId(null);
+    setMoveFrom("");
+    setOptionSquares({});
+    hidePreview();
+    setAutoplay(false);
+    setEngineMovePending(false);
+  }, [clearTrainingAutoMoveTimer, clearVariationSession, clearPremoves, hidePreview]);
+
+  const readPgn = async (source: string | File) => {
+    const id = ++requestId.current;
+    candidateWorker.current?.terminate();
+    candidateWorker.current = null;
+    setImporting(true);
+    setImportError("");
+    setAutoplay(false);
+    const fail = (reason?: string) => {
+      if (requestId.current !== id) return;
+      candidateWorker.current?.terminate();
+      candidateWorker.current = null;
+      setGameIndex(loadedIndex.current);
+      setImporting(false);
+      setImportError(reason === "fen"
+        ? t("La posizione FEN iniziale non è valida.", "The starting FEN is invalid.")
+        : t("Impossibile leggere il PGN. Controlla il file o il testo.", "Could not read the PGN. Check the file or text."));
+    };
+
+    try {
+      const content = typeof source === "string" ? source : await source.text();
+      if (requestId.current !== id) return;
+      const worker = new Worker(new URL("./pgn.worker.ts", import.meta.url), { type: "module" });
+      candidateWorker.current = worker;
+      worker.onerror = () => fail();
+      worker.onmessage = ({ data }: MessageEvent<PgnReply>) => {
+        if (requestId.current !== id || data.id !== id) return;
+        if (data.type === "error") { fail(data.reason); return; }
+        pgnWorker.current?.terminate();
+        pgnWorker.current = worker;
+        candidateWorker.current = null;
+        setDesktopGames(data.summaries ?? []);
+        setGameIndex(0);
+        applyDesktopGame(data.game, 0);
+        setFileLabel(typeof source === "string" ? "" : source.name);
+        setImportVersion(value => value + 1);
+        setImporting(false);
+      };
+      worker.postMessage({ id, type: "load", source: content } satisfies PgnRequest);
+    } catch {
+      fail();
+    }
+  };
+
+  useEffect(() => {
+    const worker = pgnWorker.current;
+    if (isMobile || !worker || importing) return;
+    const id = ++requestId.current;
+    if (gameIndex === loadedIndex.current) return;
+    setImportError("");
+    setAutoplay(false);
+    const fail = () => {
+      if (requestId.current !== id) return;
+      setGameIndex(loadedIndex.current);
+      setImportError(t("Impossibile aprire la partita selezionata.", "Could not open the selected game."));
+    };
+    worker.onerror = fail;
+    worker.onmessage = ({ data }: MessageEvent<PgnReply>) => {
+      if (requestId.current !== id || data.id !== id) return;
+      if (data.type === "game") applyDesktopGame(data.game, gameIndex);
+      else fail();
+    };
+    worker.postMessage({ id, type: "select", index: gameIndex } satisfies PgnRequest);
+  }, [isMobile, importing, gameIndex, t, applyDesktopGame]);
+
+  const lastStep = fenHistory.length - 1;
+  const jump = useCallback((target: number) => {
+    if (variationSessionRef.current) return;
+    const next = Math.min(lastStep, Math.max(0, target));
+    clearPremoves();
+    stepRef.current = next;
+    setStep(next);
+    setMoveFrom("");
+    setOptionSquares({});
+    hidePreview();
+  }, [lastStep, clearPremoves, hidePreview]);
+
+  const navigate = useCallback((target: number) => {
+    setAutoplay(false);
+    jump(target);
+  }, [jump]);
+
+  useEffect(() => {
+    if (isMobile || !autoplay) return;
+    if (step >= lastStep || variationActive || training || playVsEngine || workspaceMode !== "study") {
+      setAutoplay(false);
+      return;
+    }
+    const timer = window.setTimeout(() => jump(step + 1), 800);
+    return () => window.clearTimeout(timer);
+  }, [isMobile, autoplay, step, lastStep, jump, variationActive, training, playVsEngine, workspaceMode]);
+
+  useEffect(() => {
+    if (isMobile) return;
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || variationActive || playVsEngine) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable], dialog')) return;
+      const steps = { ArrowLeft: stepRef.current - 1, ArrowRight: stepRef.current + 1, Home: 0, End: lastStep };
+      if (!Object.prototype.hasOwnProperty.call(steps, event.key)) return;
+      event.preventDefault();
+      navigate(steps[event.key as keyof typeof steps]);
+    };
+    window.addEventListener("keydown", keyboard);
+    return () => window.removeEventListener("keydown", keyboard);
+  }, [isMobile, lastStep, navigate, variationActive, playVsEngine]);
+
+  const selectDesktopNode = useCallback((node: PlyNode) => {
+    if (variationSessionRef.current || playVsEngine || !node.lineRef) return;
+    clearTrainingAutoMoveTimer();
+    pendingTrainingAutoMoveRef.current = false;
+    setAutoplay(false);
+    const line = node.lineRef;
+    const next = (node.indexInLine ?? 0) + 1;
+    if (line.nodes !== currentLinePlies || fenHistory.length !== line.nodes.length + 1 || node.fenAfter !== fenHistory[next]) {
+      setFenHistory([line.startFen, ...line.nodes.map(move => move.fenAfter)]);
+      setCurrentLinePlies(line.nodes);
+      setPlayedMoves([]);
+    }
+    clearPremoves();
+    stepRef.current = next;
+    setStep(next);
+    setActiveNodeId(node.id);
+    setMoveFrom("");
+    setOptionSquares({});
+  }, [playVsEngine, clearTrainingAutoMoveTimer, clearPremoves, currentLinePlies, fenHistory]);
+
+  const desktopPreview = useCallback((fen: string, event, node?: PlyNode) => {
+    if (!node) {
+      try { new Chess(fen); } catch { return; }
+    }
+    showPreview(fen, event, node);
+  }, []);
 
   if (isMobile) {
 
@@ -7706,1203 +6732,191 @@ export default function App() {
 
 
 
-  return (
-
-    <div style={styles.app}>
-
-      <div style={styles.container}>
-
-        <div style={styles.header}>
-
-          <div>
-
-            <div style={styles.title}>PGN Viewer</div>
-
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-
-              {t("Allenamento sulla linea principale + visualizzazione varianti (cliccabili) + analisi motore.", "Train on the main line + clickable variations + engine analysis.")}
-
+  const openDiagram = (fen: string) => {
+    if (variationActive || playVsEngine) return;
+    try {
+      const position = new Chess(fen);
+      clearTrainingAutoMoveTimer();
+      setTraining(false);
+      setAutoplay(false);
+      setFenHistory([position.fen()]);
+      setCurrentLinePlies([]);
+      setPlayedMoves([]);
+      stepRef.current = 0;
+      setStep(0);
+      setActiveNodeId(null);
+      hidePreview();
+    } catch {
+      flash(false, t("Diagramma non valido.", "Invalid diagram."));
+    }
+  };
+  const currentNode = currentLinePlies[step - 1];
+  const onMainLine = treeMain && fenHistory[0] === treeMain.startFen &&
+    currentLinePlies[0]?.lineRef === treeMain && (step === 0 || currentNode?.fenAfter === liveFen);
+  const switchMode = (mode: WorkspaceMode) => {
+    if (variationActive && mode !== "recorder") return;
+    setAutoplay(false);
+    if (mode !== "training") setTraining(false);
+    if (mode !== "study") setPlayVsEngine(false);
+    setWorkspaceMode(mode);
+  };
+  const startNewDesktopGame = () => {
+    requestId.current++;
+    candidateWorker.current?.terminate();
+    pgnWorker.current?.terminate();
+    candidateWorker.current = null;
+    pgnWorker.current = null;
+    clearPremoves();
+    resetGame();
+    stepRef.current = 0;
+    setTreeMain(null);
+    setHeaders({});
+    setMainlinePlies([]);
+    setCurrentLinePlies([]);
+    setDesktopGames([]);
+    setGameIndex(0);
+    setDesktopIndex(0);
+    loadedIndex.current = 0;
+    setFileLabel("");
+    setAutoplay(false);
+    setPlayVsEngine(false);
+    setImporting(false);
+    setImportError("");
+  };
+  const desktopTranscript = treeMain?.nodes.length || treeMain?.preVariations?.length || playedMoves.length || transcriptHidden ? (
+    <div className="pgn-panel pgn-transcript" ref={movesPaneRef} aria-label={t("Mosse", "Moves")}>
+      {transcriptHidden ? (
+        <button type="button" onClick={() => setTrainingShowTranscript(true)}>{t("Mostra trascrizione", "Show transcript")}</button>
+      ) : <>
+        {treeMain && <DesktopMoves key={importVersion + "-" + desktopIndex} line={treeMain}
+          activeId={!variationActive && currentNode?.fenAfter === liveFen ? currentNode.id : undefined}
+          onSelect={selectDesktopNode} onPreview={desktopPreview} onHidePreview={hidePreview} onOpenDiagram={openDiagram} t={t} />}
+        {!!playedMoves.length && <>
+          {treeMain && <h3>{t("Mosse giocate", "Played moves")}</h3>}
+          {playedMoves.map(move => (
+            <div className="pgn-move-row" key={move.fenIndex}>
+              <span className="pgn-move-number">{move.moveNumber}{move.color === "w" ? "." : "..."}</span>
+              <div><button type="button" className="pgn-move" data-active={step === move.fenIndex || undefined}
+                aria-current={step === move.fenIndex ? "step" : undefined} disabled={variationActive || playVsEngine}
+                onClick={() => navigate(move.fenIndex)}>{move.san}</button>
+                {move.comment && <div className="pgn-comment">{move.comment}</div>}
+              </div>
             </div>
-
-          </div>
-
-          <div style={styles.controlsRow}>
-
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-
-              <input
-
-                ref={fileInputRef}
-
-                type="file"
-
-                accept=".pgn,.PGN,text/plain"
-
-                onChange={handleFileChange}
-
-                style={{ display: "none" }}
-
-              />
-
-              <button
-
-                onClick={() => fileInputRef.current?.click()}
-
-                style={styles.btn}
-
-                title={t("Carica un file PGN", "Load a PGN file")}
-
-              >
-
-                {t("Sfoglia","Browse")}
-
-              </button>
-
-              <span style={{ fontSize: 12, color: "#6b7280" }}>
-
-                {fileLabel || t("Nessun file selezionato.", "No file selected.")}
-
-              </span>
-
-            </div>
-
-            <button
-
-              onClick={resetGame}
-
-              style={btnStyle(false)}
-
-              title={t("Nuova Partita (posizione iniziale)", "New game (initial position)")}
-
-            >
-
-              {t("Nuova Partita", "New Game")}
-
-            </button>
-
-
-
-            {/* Navigazione */}
-
-                        <button
-
-              style={btnStyle(variationActive || step === 0 || isAnimating)}
-
-              onClick={goStart}
-
-              disabled={variationActive || step === 0 || isAnimating}
-
-              title={t("Inizio", "Start")}
-
-              aria-label={t("Vai all'inizio", "Go to start")}
-
-            >
-
-              {"\u00AB"} {t("Inizio", "Start")}
-
-            </button>
-
-            <button
-
-              style={btnStyle(variationActive || !(step > 0 && !isAnimating))}
-
-              onClick={goPrev}
-
-              disabled={variationActive || !(step > 0 && !isAnimating)}
-
-              title={t("Indietro", "Back")}
-
-              aria-label={t("Mossa precedente", "Previous move")}
-
-            >
-
-              {"\u2039"} {t("Indietro", "Back")}
-
-            </button>
-
-            <button
-
-              style={{ ...btnStyle(variationActive || !(step < fenHistory.length - 1 && !isAnimating)), ...styles.btnPrimary }}
-
-              onClick={goNext}
-
-              disabled={variationActive || !(step < fenHistory.length - 1 && !isAnimating)}
-
-              title={t("Avanti", "Next")}
-
-              aria-label={t("Mossa successiva", "Next move")}
-
-            >
-
-              {t("Avanti", "Next")} {"\u203A"}
-
-            </button>
-
-            <button
-
-              style={btnStyle(variationActive || isAnimating || step === Math.max(0, fenHistory.length - 1))}
-
-              onClick={goEnd}
-
-              disabled={variationActive || isAnimating || step === Math.max(0, fenHistory.length - 1)}
-
-              title={t("Fine", "End")}
-
-              aria-label={t("Vai alla fine", "Go to end")}
-
-            >
-
-              {t("Fine", "End")} {"\u00BB"}
-
-            </button>
-
-            <button
-
-              onClick={() => setTraining((t) => !t)}
-
-              style={{ ...styles.btn, ...(training ? styles.btnToggleOn : styles.btnToggleOff) }}
-
-              title={t("Attiva/Disattiva modalita allenamento (linea corrente)", "Toggle training mode (current line)")}
-
-            >
-
-              {training ? t("Allenamento: ON", "Training: ON") : t("Allenamento: OFF", "Training: OFF")}
-
-            </button>
-
-            {training ? (
-
-              <>
-
-                <button
-
-                  onClick={() => setTrainingColor('auto')}
-
-                  style={{ ...styles.btn, ...(trainingColor === 'auto' ? styles.btnToggleOn : {}) }}
-
-                >
-
-                  {t("Replica PGN", "Replay PGN")}
-
-                </button>
-
-                <button
-
-                  onClick={() => setTrainingColor('w')}
-
-                  style={{ ...styles.btn, ...(trainingColor === 'w' ? styles.btnToggleOn : {}) }}
-
-                >
-
-                  {t("Gioco da Bianco", "Play as White")}
-
-                </button>
-
-                <button
-
-                  onClick={() => setTrainingColor('b')}
-
-                  style={{ ...styles.btn, ...(trainingColor === 'b' ? styles.btnToggleOn : {}) }}
-
-                >
-
-                  {t("Gioco da Nero", "Play as Black")}
-
-                </button>
-
-                <button
-
-                  onClick={() => {
-
-                    if (!games.length) return;
-
-                    if (trainingRandomGame) {
-
-                      pickRandomTrainingGame();
-
-                    } else {
-
-                      setTrainingRandomGame(true);
-
-                    }
-
-                  }}
-
-                  style={{
-
-                    ...styles.btn,
-
-                    ...(trainingRandomGame ? styles.btnToggleOn : styles.btnToggleOff),
-
-                    ...(!games.length ? styles.btnDisabled : {}),
-
-                  }}
-
-                  disabled={!games.length}
-
-                  title={t("Seleziona automaticamente una partita casuale al via dell'allenamento", "Pick a random game when training starts")}
-
-                >
-
-                  {trainingRandomGame ? t("Nuova casuale", "Pick another") : t("Partita casuale", "Random game")}
-
-                </button>
-
-                {trainingRandomGame ? (
-
-                  <button
-
-                    onClick={() => setTrainingRandomGame(false)}
-
-                    style={{ ...styles.btn, ...styles.btnToggleOff }}
-
-                    title={t("Disattiva la selezione casuale", "Disable random selection")}
-
-                  >
-
-                    {t("Disattiva casuale", "Disable random")}
-
-                  </button>
-
-                ) : null}
-
-                {trainingRandomGame ? (
-
-                  <button
-
-                    onClick={() => setTrainingShowTranscript((v) => !v)}
-
-                    style={{
-
-                      ...styles.btn,
-
-                      ...(trainingShowTranscript ? styles.btnToggleOn : styles.btnToggleOff),
-
-                    }}
-
-                    title={trainingShowTranscript
-
-                      ? t("Nascondi la trascrizione PGN mentre ti alleni", "Hide the PGN transcript while training")
-
-                      : t("Mostra la trascrizione PGN", "Show the PGN transcript")}
-
-                  >
-
-                    {trainingShowTranscript
-
-                      ? t("Nascondi trascrizione", "Hide transcript")
-
-                      : t("Mostra trascrizione", "Show transcript")}
-
-                  </button>
-
-                ) : null}
-
-              </>
-
-            ) : null}
-
-            <button
-
-              onClick={() => setTtsEnabled((v) => !v)}
-
-              style={{
-
-                ...styles.btn,
-
-                ...(speechAvailable ? (ttsEnabled ? styles.btnToggleOn : styles.btnToggleOff) : styles.btnDisabled),
-
-              }}
-
-              disabled={!speechAvailable}
-
-              title={speechAvailable ? t("Leggi i commenti tramite sintesi vocale", "Read comments via speech synthesis") : t("Sintesi vocale non supportata", "Speech synthesis not supported")}
-
-            >
-
-              TTS: {ttsEnabled ? "ON" : "OFF"}
-
-            </button>
-
-            <button
-
-              onClick={() => setRecorderOpen((open) => !open)}
-
-              style={{ ...styles.btn, ...(recorderOpen ? styles.btnToggleOn : {}) }}
-
-              title={recorderOpen ? t("Chiudi il registratore PGN", "Close the PGN recorder") : t("Apri il registratore PGN", "Open the PGN recorder")}
-
-            >
-
-              {recorderOpen ? t("Chiudi Recorder", "Close Recorder") : t("PGN Recorder", "PGN Recorder")}
-
-            </button>
-
-
-
-
-
-            {/* Varianti view */}
-
-            <button
-
-              onClick={() => setVariantView(v => v === 'tree' ? 'inline' : 'tree')}
-
-              style={styles.btn}
-
-              title={t("Cambia modalita di visualizzazione delle varianti", "Change variation display mode")}
-
-            >
-
-              {t("Varianti:", "Variations:")} {variantView === 'tree' ? t("albero", "tree") : t("in linea", "inline")}
-
-            </button>
-
-
-
-            {/* Apri/Chiudi tutto */}
-
-            <button
-
-              onClick={openAll}
-
-              style={btnStyle(!(variantView === 'tree' && hasAnyVariants))}
-
-              disabled={!(variantView === 'tree' && hasAnyVariants)}
-
-              title={t("Apri tutte le varianti", "Open all variations")}
-
-            >
-
-              {t("Apri tutto", "Open all")}
-
-            </button>
-
-            <button
-
-              onClick={closeAll}
-
-              style={btnStyle(!(variantView === 'tree' && hasAnyVariants))}
-
-              disabled={!(variantView === 'tree' && hasAnyVariants)}
-
-              title={t("Chiudi tutte le varianti", "Close all variations")}
-
-            >
-
-              {t("Chiudi tutto", "Close all")}
-
-            </button>
-
-
-
-            {/* Board size */}
-
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-
-              <span style={{ fontSize: 12, color: "#6b7280" }}>{t("Scacchiera", "Board")}</span>
-
-              <input
-
-                type="range"
-
-                min={300}
-
-                max={700}
-
-                value={boardSize}
-
-                onChange={(e) => setBoardSize(Number(e.target.value))}
-
-              />
-
-              <span style={{ fontSize: 12, color: "#6b7280" }}>{boardRenderWidth}px</span>
-
-            </div>
-
-
-
-            {/* Rotate board */}
-
-            <button
-
-              onClick={() => setWhiteOrientation((w) => !w)}
-
-              style={styles.btn}
-
-              title={t("Ruota la scacchiera", "Rotate the board")}
-
-            >
-
-              {"\u21BB"} {t("Ruota", "Rotate")}
-
-            </button>
-
-            <button
-
-              onClick={() => setLanguage((l) => (l === "it" ? "en" : "it"))}
-
-              style={styles.btn}
-
-              title={t("Cambia lingua interfaccia", "Toggle interface language")}
-
-            >
-
-              {t("Lingua", "Lang")} {language.toUpperCase()}
-
-            </button>
-
-              Lang {language.toUpperCase()}
-
-            <div style={styles.engineRow}>
-
-              {/* Engine controls */}
-
-              <button
-
-                onClick={() => {
-
-                  const next = !engineOn;
-
-                  setEngineOn(next);
-
-                  if (!next) stop();
-
-                }}
-
-                style={{ ...styles.btn, ...(engineOn ? styles.btnToggleOn : styles.btnToggleOff) }}
-
-                title={ready ? t("Accendi/Spegni motore", "Turn engine on/off") : t("Motore non ancora pronto", "Engine not ready yet")}
-
-              >
-
-                {engineOn ? "Engine: ON" : "Engine: OFF"}
-
-              </button>
-
-
-
-              <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
-
-                Depth
-
-                <input
-
-                  type="number"
-
-                  min={8}
-
-                  max={35}
-
-                  value={engineDepth}
-
-                  onChange={(e) => setEngineDepth(Number(e.target.value))}
-
-                  style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
-
-                />
-
-              </label>
-
-
-
-              <label style={{ fontSize: 12, color: "#6b7280", display: "inline-flex", alignItems: "center", gap: 6 }}>
-
-                MultiPV
-
-                <input
-
-                  type="number"
-
-                  min={1}
-
-                  max={5}
-
-                  value={engineMPV}
-
-                  onChange={(e) => setEngineMPV(Number(e.target.value))}
-
-                  style={{ width: 64, padding: 6, borderRadius: 8, border: "1px solid #d1d5db" }}
-
-                />
-
-              </label>
-
-
-
-              {/* VS Engine controls */}
-
-              <button
-
-                onClick={() => {
-
-                  const next = !playVsEngine;
-
-                  setPlayVsEngine(next);
-
-                  setTraining(false);
-
-                  setShowBestOnce(false);
-
-                  if (!next) {
-
-                    setEngineMovePending(false);
-
-                    lastEngineAnalyzeFenRef.current = "";
-
-                    setPlayedMoves([]);
-
-                  } else {
-
-                    lastEngineAnalyzeFenRef.current = "";
-
-                  }
-
-                }}
-
-                style={{ ...styles.btn, ...(playVsEngine ? styles.btnToggleOn : styles.btnToggleOff) }}
-
-                title={t("Gioca contro il motore", "Play against the engine")}
-
-              >
-
-                VS Engine: {playVsEngine ? "ON" : "OFF"}
-
-              </button>
-
-
-
-              <select
-
-                style={styles.select}
-
-                value={engineSide}
-
-                onChange={(e) => setEngineSide(((e.target.value === "w" ? "w" : "b") as 'w'|'b'))}
-
-                title={t("Colore del motore", "Engine color")}
-
-              >
-
-                <option value="w">{t("Motore: Bianco", "Engine: White")}</option>
-
-                <option value="b">{t("Motore: Nero", "Engine: Black")}</option>
-
-              </select>
-
-            </div>
-
-
-
-            {/* Best move overlay toggle */}
-
-            <button
-
-              onClick={() => setShowBestArrow(s => !s)}
-
-              style={{ ...styles.btn, ...(showBestArrow ? styles.btnToggleOn : styles.btnToggleOff) }}
-
-              title={t("Mostra/Nascondi freccia Best Move del motore", "Show/Hide engine best move arrow")}
-
-            >
-
-              Best move: {showBestArrow ? "ON" : "OFF"}
-
-            </button>
-
-          </div>
-
-        </div>
-
-
-
-        <div style={styles.sectionGrid}>
-
-          <div style={styles.card}>
-
-            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>{t("Partite nel PGN", "PGN Games")}</div>
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-
-              <button
-
-                onClick={goPrevGame}
-
-                disabled={!canPrevGame}
-
-                style={btnStyle(!canPrevGame, { padding: '4px 8px', fontSize: 12 })}
-
-                title={t("Partita precedente", "Previous game")}
-
-                aria-label={t("Partita precedente", "Previous game")}
-
-              >
-
-                {"\u2039"}
-
-              </button>
-
-              <select
-
-                style={{ ...styles.select, flex: 1 }}
-
-                value={String(Math.min(gameIndex, Math.max(0, games.length - 1)))}
-
-                onChange={(e) => setGameIndex(Number(e.target.value))}
-
-              >
-
-                {games.length ? (
-
-                  games.map((g, i) => (
-
-                    <option key={i} value={String(i)} style={{ color: "#000" }}>
-
-                      {gameLabel(parseHeaders(g))}
-
-                    </option>
-
-                  ))
-
-                ) : (
-
-                  <option style={{ color: "#000" }}>{t("(nessuna partita)", "(no games)")}</option>
-
-                )}
-
-              </select>
-
-              <button
-
-                onClick={goNextGame}
-
-                disabled={!canNextGame}
-
-                style={btnStyle(!canNextGame, { padding: '4px 8px', fontSize: 12 })}
-
-                title={t("Partita successiva", "Next game")}
-
-                aria-label={t("Partita successiva", "Next game")}
-
-              >
-
-                {"\u203A"}
-
-              </button>
-
-            </div>
-
-            {games.length ? (
-
-              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
-
-                {isEnglish ? `Game ${gameIndex + 1} of ${games.length}` : `Partita ${gameIndex + 1} di ${games.length}`}
-
-              </div>
-
-            ) : null}
-
-          </div>
-
-
-
-
-
-          <div style={styles.card}>
-
-            <div style={{ marginBottom: 6, fontSize: 12, fontWeight: 700, color: "#000" }}>{t("Oppure incolla qui il PGN", "Or paste the PGN here")}</div>
-
-            <div style={{ display: "flex", gap: 8 }}>
-
-              <textarea
-
-                style={styles.textarea}
-
-                value={rawPgn}
-
-                onChange={(e) => setRawPgn(e.target.value)}
-
-                placeholder={t("Incolla qui il tuo PGN...", "Paste your PGN here...")}
-
-              />
-
-              <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={loadFromTextarea}>{t("Carica", "Load")}</button>
-
-            </div>
-
-          </div>
-
-
-
-        </div>
-
-
-
-        <div style={styles.layout} ref={layoutRef}>
-
-          {/* Pannello sinistro: scacchiera + eval bar + engine panel */}
-
-          <div style={{ ...styles.left, flex: `0 0 ${leftWidth}px` }}>
-
-            {/* Board + EvalBar */}
-
-            <div style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 8 }}>
-
-              {/* Eval Bar (vantaggio White; per Nero è complementare) */}
-
-              <div style={{ height: boardRenderWidth }}>
-
-                <EvalBar
-
-                  cp={topCp}
-
-                  mate={topMate}
-
-                  turn={liveFen.split(" ")[1] === "w" ? "w" : "b"}
-
-                />
-
-              </div>
-
-
-
-              {/* Scacchiera */}
-
-              <div ref={boardCellRef} style={{ width: "100%" }}>
-
-                <div
-
-                  onWheel={onWheelNav}
-
-                  style={{ width: boardRenderWidth, height: boardRenderWidth, borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 8px rgba(0,0,0,.08)" }}
-
-                  title={t("Usa la rotellina per scorrere le mosse", "Use the mouse wheel to scroll moves")}
-
-                >
-
-                  <Chessboard
-
-                    options={{
-
-                      id: 'main-board',
-
-                      position: liveFen,
-
-                      onPieceDrop, // firma v5: ({ sourceSquare, targetSquare }) => boolean
-
-                      onSquareClick,
-
-                      onSquareRightClick,
-
-                      boardWidth: boardRenderWidth,
-
-                      animationDuration: 200,
-
-                      squareStyles: boardSquareStyles,
-
-                      customPieces: checkmatePieces,
-
-                      arrows: (boardArrows || []).map(([from, to]: any) => ({
-
-                        startSquare: from,
-
-                        endSquare: to,
-
-                        color: 'rgb(0, 128, 0)',
-
-                      })), // ex customArrows
-
-                      boardOrientation: whiteOrientation ? 'white' : 'black',
-
-                    }}
-
-                  />
-
-                </div>
-
-              </div>
-
-            </div>
-
-
-
-            <div style={{ textAlign: "center", fontSize: 12, color: "#6b7280" }}>{statusLine}</div>
-
-            {mateMessage && (
-
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#dc2626" }}>
-
-                {mateMessage}
-
-              </div>
-
-            )}
-
-            {feedback && (
-
-              <div style={{ fontSize: 13, ...(feedback.ok ? styles.feedbackGood : styles.feedbackBad) }}>
-
-                {feedback.text}
-
-              </div>
-
-            )}
-
-
-
-            <div style={styles.liveMovesPanel}>
-
-              <div style={styles.liveMovesHeader}>
-
-                <span>{t("Mosse della partita", "Game moves")}</span>
-
-                <div style={styles.liveMovesControls}>
-
-                  <button
-
-                    onClick={goStart}
-
-                    disabled={!canGoBackward}
-
-                    style={{
-
-                      ...styles.liveMoveBtn,
-
-                      ...(!canGoBackward ? styles.liveMoveBtnDisabled : {}),
-
-                    }}
-
-                    title={t("Vai all'inizio", "Go to start")}
-
-                  >
-
-                    {"|<"}
-
-                  </button>
-
-                  <button
-
-                    onClick={goPrev}
-
-                    disabled={!canGoBackward}
-
-                    style={{
-
-                      ...styles.liveMoveBtn,
-
-                      ...(!canGoBackward ? styles.liveMoveBtnDisabled : {}),
-
-                    }}
-
-                    title={t("Mossa precedente", "Previous move")}
-
-                  >
-
-                    {"<"}
-
-                  </button>
-
-                  <button
-
-                    onClick={goNext}
-
-                    disabled={!canGoForward}
-
-                    style={{
-
-                      ...styles.liveMoveBtn,
-
-                      ...(!canGoForward ? styles.liveMoveBtnDisabled : {}),
-
-                    }}
-
-                    title={t("Mossa successiva", "Next move")}
-
-                  >
-
-                    {">"}
-
-                  </button>
-
-                  <button
-
-                    onClick={goEnd}
-
-                    disabled={!canGoForward}
-
-                    style={{
-
-                      ...styles.liveMoveBtn,
-
-                      ...(!canGoForward ? styles.liveMoveBtnDisabled : {}),
-
-                    }}
-
-                    title={t("Vai all'ultima mossa", "Go to last move")}
-
-                  >
-
-                    {">|"}
-
-                  </button>
-
-                </div>
-
-              </div>
-
-              {playedMoves.length === 0 ? (
-
-                <div style={styles.liveMovesEmpty}>{t("Nessuna mossa registrata", "No moves recorded yet")}</div>
-
-              ) : (
-
-                <div style={styles.liveMovesList}>
-
-                  {playedMoves.map((mv, idx) => {
-
-                    const prefix = mv.color === "w" ? `${mv.moveNumber}.` : `${mv.moveNumber}...`;
-
-                    const isActive = step === mv.fenIndex;
-
-                    const highlight = mv.from || mv.to ? { from: mv.from ?? null, to: mv.to ?? null } : undefined;
-
-                    return (
-
-                      <div
-
-                        key={`played-${mv.fenIndex}-${idx}`}
-
-                        style={{
-
-                          ...styles.liveMoveChip,
-
-                          ...(isActive ? styles.liveMoveActive : {}),
-
-                        }}
-
-                        role="button"
-
-                        tabIndex={0}
-
-                        onClick={() => animateToStep(mv.fenIndex)}
-
-                        onKeyDown={(e) => {
-
-                          if (e.key === "Enter" || e.key === " ") {
-
-                            e.preventDefault();
-
-                            animateToStep(mv.fenIndex);
-
-                          }
-
-                        }}
-
-                        onMouseEnter={(e) => {
-
-                          if (mv.fen) showPreview(mv.fen, e, highlight);
-
-                        }}
-
-                        onMouseMove={(e) => {
-
-                          if (mv.fen) movePreview(e);
-
-                        }}
-
-                        onMouseLeave={() => hidePreview()}
-
-                        onFocus={(e) => {
-
-                          if (mv.fen) showPreview(mv.fen, e as any, highlight);
-
-                        }}
-
-                        onBlur={() => hidePreview()}
-
-                      >
-
-                        <div style={styles.liveMoveTurn}>{prefix}</div>
-
-                        <div style={styles.liveMoveSan}>{mv.san}</div>
-
-                      </div>
-
-                    );
-
-                  })}
-
-                </div>
-
-              )}
-
-            </div>
-
-            {/* Errori motore */}
-
-            {engineErr && (
-
-              <div style={{ color: "#b91c1c", fontSize: 12, marginTop: 6 }}>{engineErr}</div>
-
-            )}
-
-
-
-            {/* Pannello varianti del motore */}
-
-            {engineOn && (
-
-              <div style={{ marginTop: 8 }}>
-
-                {renderEnginePanel()}
-
-              </div>
-
-            )}
-
-          </div>
-
-
-
-          {/* Splitter */}
-
-          <div
-
-            style={{ ...styles.splitter, ...(dragging ? styles.splitterActive : {}) }}
-
-            onMouseDown={onSplitDown}
-
-            title={t("Trascina per ridimensionare", "Drag to resize")}
-
-          />
-
-
-
-
-
-          {/* Pannello destro: mosse/varianti PGN */}
-
-          <div style={styles.right} ref={movesPaneRef}>
-
-            {recorderOpen ? (
-
-              renderRecorder("panel")
-
-            ) : !treeMain ? (
-
-              <div style={{ fontSize: 12, color: "#6b7280" }}>
-
-                {t("Carica un PGN e seleziona una partita per vedere mosse, commenti e varianti.", "Load a PGN and pick a game to see moves, comments, and variations.")}
-
-              </div>
-
-            ) : transcriptHidden ? (
-
-              <div style={{ display: "grid", gap: 12, fontSize: 13, color: "#4b5563" }}>
-
-                <div>{t("Trascrizione PGN nascosta durante l'allenamento casuale.", "PGN transcript hidden during random training.")}</div>
-
-                <button
-
-                  type="button"
-
-                  style={{ ...styles.btn, ...styles.btnPrimary, alignSelf: "start" }}
-
-                  onClick={() => setTrainingShowTranscript(true)}
-
-                >
-
-                  {t("Mostra trascrizione", "Show transcript")}
-
-                </button>
-
-              </div>
-
-            ) : (
-
-              <div style={styles.flow}>{flow}</div>
-
-            )}
-
-          </div>
-
-        </div>
-
-
-
-        <div style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
-
-          Suggerimento: passa sopra <span style={styles.fenBadge}>Diagramma</span> per l'anteprima.
-
-          Le card in alto e il pannello mosse sono ridimensionabili. Trascina lo splitter per variare la larghezza.
-
-        </div>
-
-      </div>
-
-
-
-      {/* Tooltip mini-board (se visibile) */}
-
-      {preview.visible && preview.fen && (
-
-        <div
-
-          style={{
-
-            position: "fixed",
-
-            left: pvLeft,
-
-            top: pvTop,
-
-            width: pvSize,
-
-            height: pvSize,
-
-            pointerEvents: "none",
-
-            zIndex: 9999,
-
-            boxShadow: "0 6px 20px rgba(0,0,0,.18)",
-
-            borderRadius: 12,
-
-            overflow: "hidden",
-
-            background: "white",
-
-          }}
-
-        >
-
-          <Chessboard
-
-            options={{
-
-              id: 'preview-board',
-
-              position: preview.fen,
-
-              onPieceDrop: undefined,
-
-              boardWidth: pvSize,
-
-              animationDuration: 0,
-
-              arrows: [],
-
-              squareStyles: previewSquareStyles,
-
-            }}
-
-          />
-        </div>
-
-      )}
-
+          ))}
+        </>}
+      </>}
     </div>
+  ) : null;
 
-  );
-
+  return <DesktopWorkspace t={t} mode={workspaceMode} setMode={switchMode}
+    games={desktopGames} gameIndex={desktopIndex} headers={headers} sourceName={fileLabel}
+    selectGame={setGameIndex} importPgn={readPgn} importVersion={importVersion} busy={importing} error={importError}
+    newGame={startNewDesktopGame} step={step} lastStep={lastStep} fen={liveFen}
+    blackToMove={sideFromFen(liveFen) === "b"} flip={flipDesktopBoard}
+    locked={variationActive || playVsEngine} navigate={navigate} autoplay={autoplay}
+    toggleAutoplay={() => {
+      if (autoplay) { setAutoplay(false); return; }
+      if (workspaceMode !== "study") switchMode("study");
+      if (step >= lastStep) jump(0);
+      setAutoplay(true);
+    }}
+    returnToMain={treeMain && !onMainLine && !playVsEngine && !variationActive
+      ? () => applyDesktopGame({ headers, main: treeMain, mainlineFlat: treeMain.nodes }, desktopIndex)
+      : undefined}
+    board={<Chessboard options={{
+      id: "desktop-board", position: liveFen, onSquareRightClick,
+      onPieceDrop: args => { setAutoplay(false); return onPieceDrop(args); },
+      onSquareClick: args => { setAutoplay(false); onSquareClick(args); },
+      animationDurationInMs: 160, squareStyles: boardSquareStyles, customPieces: checkmatePieces,
+      lightSquareStyle: { backgroundColor: "#edf0da" }, darkSquareStyle: { backgroundColor: "#88a182" },
+      arrows: suggestions,
+      boardOrientation: whiteOrientation ? "white" : "black",
+    }} />}
+    suggestions={suggestions}
+    evaluation={engineOn ? <EvalBar cp={topCp} mate={topMate} turn={sideFromFen(liveFen)} /> : null}
+    preview={preview.visible && preview.fen && <div style={{
+      position: "fixed", left: pvLeft, top: pvTop, width: pvSize, height: pvSize,
+      pointerEvents: "none", zIndex: 9999, borderRadius: 10, overflow: "hidden", boxShadow: "0 8px 28px #0005",
+    }}><Chessboard options={{ id: "desktop-preview-board", position: preview.fen, allowDragging: false,
+      animationDurationInMs: 0, squareStyles: previewSquareStyles,
+      boardOrientation: whiteOrientation ? "white" : "black" }} /></div>}
+    feedback={<>
+      {mateMessage && <strong>{mateMessage}</strong>}
+      {feedback && <strong style={feedback.ok ? styles.feedbackGood : styles.feedbackBad}>{feedback.text}</strong>}
+    </>}
+    transcript={desktopTranscript}
+    trainingPanel={<section className="pgn-training">
+      <div className="pgn-control-row">
+        <button type="button" className={training ? "" : "pgn-primary"} aria-pressed={training}
+          disabled={!treeMain?.nodes.length}
+          onClick={() => { setAutoplay(false); setTraining(value => !value); }}>
+          {training ? t("Termina allenamento", "End training") : t("Avvia allenamento", "Start training")}
+        </button>
+        <label>{t("Gioca come", "Play as")} <select value={trainingColor} onChange={event => setTrainingColor(event.target.value)}>
+          <option value="auto">{t("Entrambi", "Both")}</option>
+          <option value="w">{t("Bianco", "White")}</option><option value="b">{t("Nero", "Black")}</option>
+        </select></label>
+        <button type="button" aria-pressed={trainingRandomGame} disabled={!gameCount}
+          onClick={() => setTrainingRandomGame(value => !value)}>{t("Partita casuale", "Random game")}</button>
+        {training && trainingRandomGame && <>
+          <button type="button" onClick={pickRandomTrainingGame}>{t("Nuova casuale", "Pick another")}</button>
+          <button type="button" onClick={() => setTrainingShowTranscript(value => !value)}>
+            {trainingShowTranscript ? t("Nascondi mosse", "Hide moves") : t("Mostra mosse", "Show moves")}
+          </button>
+        </>}
+      </div>
+    </section>}
+    recorder={workspaceMode === "recorder" ? <>
+      {!!playedMoves.length && <div className="pgn-recorded-moves" aria-label={t("Mosse registrate", "Recorded moves")}>
+        {playedMoves.map(move => <button type="button" key={move.fenIndex}
+          aria-current={step === move.fenIndex ? "step" : undefined}
+          disabled={variationActive} onClick={() => navigate(move.fenIndex)}>{move.moveNumber}{move.color === "w" ? "." : "..."} {move.san}</button>)}
+      </div>}
+      {renderRecorder("panel")}
+    </> : null}
+    engine={<section className="pgn-engine">
+      <div className="pgn-engine-head">
+        <h2>{t("Analisi Stockfish", "Stockfish analysis")}</h2>
+        <button type="button" aria-pressed={engineOn} onClick={() => {
+          if (engineOn) { setPlayVsEngine(false); stop(); }
+          setEngineOn(!engineOn);
+        }}>{engineOn ? t("Disattiva", "Turn off") : t("Attiva", "Turn on")}</button>
+      </div>
+      {engineOn && <div className="pgn-engine-content">
+        <div className="pgn-control-row">
+          <label>{t("Profondit\u00e0", "Depth")} <select value={engineDepth}
+            onChange={event => setEngineDepth(Number(event.target.value))}>
+            {Array.from({ length: 28 }, (_, index) => index + 8).map(value => <option key={value}>{value}</option>)}
+          </select></label>
+          <label>{t("Linee", "Lines")} <select value={engineMPV} disabled={playVsEngine} onChange={event => setEngineMPV(Number(event.target.value))}>
+            {[1, 2, 3, 4, 5, 6].map(value => <option key={value}>{value}</option>)}
+          </select></label>
+          <label>{t("Frecce migliori mosse", "Best move arrows")} <select value={suggestionCount}
+            onChange={event => setSuggestionCount(Number(event.target.value))}>
+            <option value={0}>{t("0 (nessuna)", "0 (off)")}</option>
+            {suggestionColors.map((color, index) => <option key={color} value={index + 1}>{index + 1}</option>)}
+          </select></label>
+          <label><input type="checkbox" checked={playVsEngine} disabled={variationActive}
+            onChange={event => { setAutoplay(false); setPlayVsEngine(event.target.checked); }} />
+            {t("Gioca contro il motore", "Play against engine")}</label>
+          {playVsEngine && <label>{t("Colore motore", "Engine color")} <select value={engineSide} onChange={event => setEngineSide(event.target.value === "w" ? "w" : "b")}>
+            <option value="b">{t("Nero", "Black")}</option><option value="w">{t("Bianco", "White")}</option>
+          </select></label>}
+        </div>
+        {engineErr ? <div className="pgn-error" role="alert">{t("Stockfish non disponibile. Disattiva e riattiva per riprovare.", "Stockfish unavailable. Turn it off and on to retry.")}</div>
+          : !ready ? <div role="status">{t("Avvio Stockfish...", "Starting Stockfish...")}</div>
+          : !playVsEngine ? renderEnginePanel() : thinking ? <div role="status">{t("Il motore sta pensando...", "Engine is thinking...")}</div> : null}
+      </div>}
+    </section>}
+    settings={<div className="pgn-settings">
+      <label>{t("Lingua", "Language")} <select value={language} onChange={event => setLanguage(event.target.value === "it" ? "it" : "en")}>
+        <option value="it">Italiano</option><option value="en">English</option>
+      </select></label>
+      <label><input type="checkbox" disabled={!speechAvailable} checked={ttsEnabled} onChange={event => setTtsEnabled(event.target.checked)} />
+        {t("Leggi i commenti", "Read annotations aloud")}</label>
+      <strong>{t("Scorciatoie", "Keyboard shortcuts")}</strong>
+      <span><kbd>&#8592;</kbd> <kbd>&#8594;</kbd> {t("Mossa precedente o successiva", "Previous or next move")}</span>
+      <span><kbd>Home</kbd> <kbd>End</kbd> {t("Inizio o fine linea", "Start or end of line")}</span>
+    </div>}
+  />;
 }

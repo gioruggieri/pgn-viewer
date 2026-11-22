@@ -14,7 +14,7 @@ export type StockfishEngineInfo = {
 
 const BASE = (import.meta as any)?.env?.BASE_URL || "/";
 
-function resolveEngineUrl(path: string) {
+export function resolveEngineUrl(path: string) {
   const base = String(BASE || "/").replace(/\/+$/, "");
   const target = path.startsWith("/") ? path : `/${path}`;
   return `${base}${target}` || target;
@@ -39,7 +39,7 @@ export type EngineLine = {
 type Options = { multipv?: number; depth?: number };
 
 /** Converte una lista di mosse UCI in SAN partendo da un FEN */
-function uciPathToSan(startFen: string, uciMoves: string[]) {
+export function uciPathToSan(startFen: string, uciMoves: string[]) {
   const chess = new Chess(startFen);
   const sanMoves: string[] = [];
   const fenFrames: string[] = [chess.fen()];
@@ -120,7 +120,7 @@ function defaultOnMessageFactory(params: {
   };
 }
 
-export function useStockfish(engine: StockfishEngineInfo = STOCKFISH_ENGINES[0]) {
+export function useStockfish(engine: StockfishEngineInfo = STOCKFISH_ENGINES[0], enabled = true) {
   const [ready, setReady] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [lines, setLines] = useState<EngineLine[]>([]);
@@ -197,6 +197,7 @@ export function useStockfish(engine: StockfishEngineInfo = STOCKFISH_ENGINES[0])
   }, [clearTimer, setReady, setThinking, setLines, setEngineErr]);
 
   useEffect(() => {
+    if (!enabled) return;
     const effectiveEngine = engine ?? STOCKFISH_ENGINES[0];
     spawnWorker(effectiveEngine);
     return () => {
@@ -204,7 +205,7 @@ export function useStockfish(engine: StockfishEngineInfo = STOCKFISH_ENGINES[0])
       try { workerRef.current?.terminate(); } catch {}
       workerRef.current = null;
     };
-  }, [engine, spawnWorker, clearTimer]);
+  }, [engine, enabled, spawnWorker, clearTimer]);
 
   function setOptions(next: Partial<Options>) {
     const engineCfg = engineConfigRef.current ?? STOCKFISH_ENGINES[0];
