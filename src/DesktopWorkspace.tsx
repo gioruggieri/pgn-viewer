@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { GameSummary } from "./pgn.worker";
 import "./desktop.css";
 
@@ -53,6 +53,9 @@ export function DesktopWorkspace(props: Props) {
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(100);
   const [copied, setCopied] = useState(false);
+  const [boardSize, setBoardSize] = useState<number | null>(null);
+  const boardColumn = useRef<HTMLElement>(null);
+  const boardDrag = useRef<{ pointerId: number; startX: number; startSize: number } | null>(null);
   const modal = useRef<HTMLDialogElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
   const deferredQuery = useDeferredValue(query);
@@ -114,6 +117,7 @@ export function DesktopWorkspace(props: Props) {
   const next = t("Mossa successiva", "Next move");
   const last = t("Vai alla fine", "Go to end");
   const play = props.autoplay ? t("Pausa", "Pause") : t("Riproduci", "Play");
+  const resizeBoard = t("Ridimensiona scacchiera", "Resize chessboard");
   const loaded = Boolean(Object.keys(headers).length || games.length);
   const metadata = [headers.Event, headers.Date?.replace(/\./g, "/"), headers.ECO, headers.Result]
     .filter(value => value && value !== "?" && value !== "????/??/??" && value !== "*").join(" · ");
@@ -133,11 +137,36 @@ export function DesktopWorkspace(props: Props) {
         <button type="button" onClick={() => setDialog("settings")}>{settingsTitle}</button>
       </div>
     </header>
-    <main className="pgn-workspace">
-      <section className="pgn-board-column" aria-label={t("Scacchiera", "Chessboard")}>
+    <main className="pgn-workspace" style={boardSize === null ? undefined : { "--board-size": `${boardSize}px` } as CSSProperties}>
+      <section ref={boardColumn} className="pgn-board-column" aria-label={t("Scacchiera", "Chessboard")}>
         <div className="pgn-board-stage">
           {props.evaluation && <div className="pgn-evaluation">{props.evaluation}</div>}
           <div className="pgn-board-frame">{props.board}</div>
+          <button type="button" className="pgn-board-resize" aria-label={resizeBoard} title={resizeBoard}
+            onPointerDown={event => {
+              if (event.button !== 0 || boardDrag.current || !boardColumn.current) return;
+              boardDrag.current = {
+                pointerId: event.pointerId, startX: event.clientX, startSize: boardColumn.current.clientWidth,
+              };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={event => {
+              const drag = boardDrag.current;
+              if (drag?.pointerId !== event.pointerId) return;
+              setBoardSize(drag.startSize + event.clientX - drag.startX);
+            }}
+            onLostPointerCapture={event => {
+              if (boardDrag.current?.pointerId === event.pointerId) boardDrag.current = null;
+            }}
+            onKeyDown={event => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const width = boardColumn.current?.clientWidth;
+              if (width !== undefined) setBoardSize(width + (event.key === "ArrowLeft" ? -24 : 24));
+            }}
+            onClick={event => { if (event.detail === 0) setBoardSize(null); }}
+            onDoubleClick={() => setBoardSize(null)}
+          />
         </div>
         <div className="pgn-navigation">
           <div className="pgn-transport">
