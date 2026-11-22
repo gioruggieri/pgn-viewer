@@ -658,6 +658,7 @@ export default function App() {
   const gameCount = isMobile ? games.length : desktopGames.length;
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("study");
   const [autoplay, setAutoplay] = useState(false);
+  const [autoplayInterval, setAutoplayInterval] = useState(800);
   const [importError, setImportError] = useState("");
   const [importing, setImporting] = useState(false);
   const [importVersion, setImportVersion] = useState(0);
@@ -5419,9 +5420,9 @@ export default function App() {
       setAutoplay(false);
       return;
     }
-    const timer = window.setTimeout(() => jump(step + 1), 800);
+    const timer = window.setTimeout(() => jump(step + 1), autoplayInterval);
     return () => window.clearTimeout(timer);
-  }, [isMobile, autoplay, step, lastStep, jump, variationActive, training, playVsEngine, workspaceMode]);
+  }, [isMobile, autoplay, autoplayInterval, step, lastStep, jump, variationActive, training, playVsEngine, workspaceMode]);
 
   useEffect(() => {
     if (isMobile) return;
@@ -6790,6 +6791,7 @@ export default function App() {
     newGame={startNewDesktopGame} step={step} lastStep={lastStep} fen={liveFen}
     blackToMove={sideFromFen(liveFen) === "b"} flip={flipDesktopBoard}
     locked={variationActive || playVsEngine} navigate={navigate} autoplay={autoplay}
+    autoplayInterval={autoplayInterval} setAutoplayInterval={setAutoplayInterval}
     toggleAutoplay={() => {
       if (autoplay) { setAutoplay(false); return; }
       if (workspaceMode !== "study") switchMode("study");

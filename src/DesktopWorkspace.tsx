@@ -37,6 +37,8 @@ type Props = {
   locked: boolean;
   navigate: (step: number) => void;
   autoplay: boolean;
+  autoplayInterval: number;
+  setAutoplayInterval: (milliseconds: number) => void;
   toggleAutoplay: () => void;
   returnToMain?: () => void;
   blackToMove: boolean;
@@ -177,6 +179,19 @@ export function DesktopWorkspace(props: Props) {
             <button type="button" title={last} aria-label={last} disabled={props.locked || props.step >= props.lastStep} onClick={() => props.navigate(props.lastStep)}>»</button>
           </div>
           <div className="pgn-board-tools">
+            <label className="pgn-autoplay-interval">
+              {t("Intervallo", "Interval")}
+              <input type="number" min={0.2} max={10} step={0.1} defaultValue={props.autoplayInterval / 1000}
+                aria-label={t("Intervallo tra le mosse in secondi", "Time between moves in seconds")}
+                onChange={event => {
+                  const { valueAsNumber, validity } = event.currentTarget;
+                  if (validity.valid && Number.isFinite(valueAsNumber)) {
+                    props.setAutoplayInterval(Math.round(valueAsNumber * 1000));
+                  }
+                }}
+                onBlur={event => { event.currentTarget.value = String(props.autoplayInterval / 1000); }} />
+              <span aria-hidden="true">s</span>
+            </label>
             <button type="button" onClick={props.flip}>{t("Ruota", "Flip")}</button>
             <button type="button" onClick={copy}>{copied ? t("Copiato", "Copied") : t("Copia FEN", "Copy FEN")}</button>
           </div>

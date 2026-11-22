@@ -130,6 +130,16 @@ html:has(.pgn-desktop) { scrollbar-gutter: stable; }
 .pgn-transport { flex-wrap: nowrap; }
 .pgn-transport button { min-width: 37px; padding-inline: 8px; font-size: 1.18rem; }
 .pgn-transport .pgn-play { font-size: .92rem; min-width: 42px; }
+.pgn-autoplay-interval { display: inline-flex; align-items: center; gap: 5px; font-size: .83rem; color: var(--muted); }
+.pgn-autoplay-interval input {
+  width: 58px;
+  min-height: 39px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
 .pgn-progress { flex: 1 0 100%; display: flex; align-items: center; gap: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .pgn-progress input { flex: 1; min-width: 0; accent-color: var(--accent); }
 .pgn-board-status { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 10px 2px 0; font-size: .87rem; color: var(--muted); }
