@@ -10,7 +10,7 @@ type Props = {
   onPreview: (fen: string, event: PreviewEvent, move?: PlyNode) => void;
   onHidePreview: () => void;
   t: Translate;
-  onOpenDiagram: (fen: string) => void;
+  onOpenDiagram?: (fen: string) => void;
 };
 
 const diagram = /(?:\[\[FEN:\s*([^\]]+)\]\]|^FEN\s*:\s*(.+)$)/gi;
@@ -24,7 +24,7 @@ function Comments({ texts, onPreview, onHidePreview, onOpenDiagram, t }: Pick<Pr
     return <span key={index}>
       {text.slice(0, match.index)}
       <button type="button" className="pgn-diagram"
-        onClick={() => onOpenDiagram(fen)}
+        onClick={() => onOpenDiagram?.(fen)}
         onMouseEnter={event => onPreview(fen, event)}
         onFocus={event => onPreview(fen, event)}
         onMouseLeave={onHidePreview} onBlur={onHidePreview}>

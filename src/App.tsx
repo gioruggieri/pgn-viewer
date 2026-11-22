@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { DesktopWorkspace, type WorkspaceMode } from "./DesktopWorkspace";
 import { DesktopMoves } from "./DesktopMoves";
+import { DesktopRecorder, parseRecordedVariation, type RecordedVariationPosition } from "./DesktopRecorder";
 import { useDesktopEngine } from "./useDesktopEngine";
 import type { GameSummary, PgnReply, PgnRequest } from "./pgn.worker";
 
@@ -709,6 +710,7 @@ export default function App() {
   const [recorderOpen, setRecorderOpen] = useState(false);
   const [editingGameId, setEditingGameId] = useState<string | null>(null);
   const [variationDraft, setVariationDraft] = useState("");
+  const [recorderPosition, setRecorderPosition] = useState<RecordedVariationPosition | null>(null);
   const variationSessionRef = useRef<VariationInternal | null>(null);
   const [variationSession, setVariationSession] = useState<VariationState | null>(null);
   const [variationEditIndex, setVariationEditIndex] = useState<number | null>(null);
@@ -717,6 +719,7 @@ export default function App() {
   const variationDraftRef = useRef("");
 
   const clearVariationSession = useCallback(() => {
+    setRecorderPosition(null);
 
     variationSessionRef.current = null;
 
@@ -738,7 +741,9 @@ export default function App() {
   const pendingTrainingAutoMoveRef = useRef(false);
 
   const baseLiveFen = fenHistory[step] || DEFAULT_POSITION;
-  const liveFen = variationSession?.currentFen ?? baseLiveFen;
+  const recorderPreview = !isMobile && workspaceMode === "recorder" && recorderPosition?.anchor === step
+    ? recorderPosition : null;
+  const liveFen = variationSession?.currentFen ?? recorderPreview?.node.fenAfter ?? baseLiveFen;
   const variationActive = !!variationSession;
 
 
@@ -1125,7 +1130,7 @@ export default function App() {
 
     }
 
-  }, [step, fenHistory]);
+  }, [step, fenHistory, workspaceMode, recorderPreview]);
 
 
 
@@ -1543,6 +1548,7 @@ export default function App() {
   // evidenzia ultimi from/to
 
   const lastFromTo = useMemo(() => {
+    if (recorderPreview) return { from: recorderPreview.node.from, to: recorderPreview.node.to };
 
     if (!isMobile && !variationSession) {
       if (step === 0) return null;
@@ -1629,7 +1635,7 @@ export default function App() {
 
     }
 
-  }, [variationSession, fenHistory, step, currentLinePlies, playedMoves, isMobile]);
+  }, [variationSession, fenHistory, step, currentLinePlies, playedMoves, isMobile, recorderPreview]);
 
 
 
@@ -4791,6 +4797,7 @@ export default function App() {
           <div style={styles.recordedSummary}>{recordSummary}</div>
 
         </div>
+        {mode === "mobile" && <>
         <div style={{ display: "grid", gap: 6 }}>
 
 
@@ -5006,6 +5013,7 @@ export default function App() {
 
         </div>
 
+        </>}
         <div style={{ display: "grid", gap: 6 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#111827" }}>
 
@@ -5400,6 +5408,7 @@ export default function App() {
   const lastStep = fenHistory.length - 1;
   const jump = useCallback((target: number) => {
     if (variationSessionRef.current) return;
+    setRecorderPosition(null);
     const next = Math.min(lastStep, Math.max(0, target));
     clearPremoves();
     stepRef.current = next;
@@ -5427,7 +5436,7 @@ export default function App() {
   useEffect(() => {
     if (isMobile) return;
     const keyboard = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || variationActive || playVsEngine) return;
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || variationActive || recorderPreview || playVsEngine) return;
       const target = event.target;
       if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable], dialog')) return;
       const steps = { ArrowLeft: stepRef.current - 1, ArrowRight: stepRef.current + 1, Home: 0, End: lastStep };
@@ -5437,7 +5446,7 @@ export default function App() {
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [isMobile, lastStep, navigate, variationActive, playVsEngine]);
+  }, [isMobile, lastStep, navigate, variationActive, recorderPreview, playVsEngine]);
 
   const selectDesktopNode = useCallback((node: PlyNode) => {
     if (variationSessionRef.current || playVsEngine || !node.lineRef) return;
@@ -6732,6 +6741,7 @@ export default function App() {
     currentLinePlies[0]?.lineRef === treeMain && (step === 0 || currentNode?.fenAfter === liveFen);
   const switchMode = (mode: WorkspaceMode) => {
     if (variationActive && mode !== "recorder") return;
+    setRecorderPosition(null);
     setAutoplay(false);
     if (mode !== "training") setTraining(false);
     if (mode !== "study") setPlayVsEngine(false);
@@ -6759,6 +6769,37 @@ export default function App() {
     setPlayVsEngine(false);
     setImporting(false);
     setImportError("");
+  };
+  const saveDesktopVariation = (anchor: number, index: number | null, text: string) => {
+    const move = playedMoves.find(current => current.fenIndex === anchor);
+    if (!move || variationActive) return false;
+    const value = text.trim().replace(/^\(([\s\S]*)\)$/u, "$1").trim();
+    const before = fenHistory[anchor - 1] ?? move.fen;
+    if (!value || !parseRecordedVariation(value, before, move.fen).main.nodes.length) {
+      flash(false, t("Inserisci una variante PGN con almeno una mossa valida.", "Enter a PGN variation with at least one legal move."));
+      return false;
+    }
+    const current = move.variations ?? [];
+    if (index !== null && !current[index]) return false;
+    if (current.some((variation, i) => index !== i && variation.trim() === value)) {
+      flash(false, t("Questa variante è già presente.", "This variation is already present."));
+      return false;
+    }
+    setPlayedMoves(moves => moves.map(item => {
+      if (item.fenIndex !== anchor) return item;
+      const variations = [...(item.variations ?? [])];
+      if (index === null) variations.push(value);
+      else variations[index] = value;
+      return { ...item, variations };
+    }));
+    flash(true, t("Variante salvata.", "Variation saved."));
+    return true;
+  };
+  const removeDesktopVariation = (anchor: number, index: number) => {
+    setPlayedMoves(moves => moves.map(move => move.fenIndex === anchor
+      ? { ...move, variations: move.variations?.filter((_, i) => i !== index) }
+      : move));
+    flash(true, t("Variante rimossa.", "Variation removed."));
   };
   const desktopTranscript = treeMain?.nodes.length || treeMain?.preVariations?.length || playedMoves.length || transcriptHidden ? (
     <div className="pgn-panel pgn-transcript" ref={movesPaneRef} aria-label={t("Mosse", "Moves")}>
@@ -6790,7 +6831,7 @@ export default function App() {
     selectGame={setGameIndex} importPgn={readPgn} importVersion={importVersion} busy={importing} error={importError}
     newGame={startNewDesktopGame} step={step} lastStep={lastStep} fen={liveFen}
     blackToMove={sideFromFen(liveFen) === "b"} flip={flipDesktopBoard}
-    locked={variationActive || playVsEngine} navigate={navigate} autoplay={autoplay}
+    locked={variationActive || !!recorderPreview || playVsEngine} navigate={navigate} autoplay={autoplay}
     autoplayInterval={autoplayInterval} setAutoplayInterval={setAutoplayInterval}
     toggleAutoplay={() => {
       if (autoplay) { setAutoplay(false); return; }
@@ -6803,8 +6844,9 @@ export default function App() {
       : undefined}
     board={<Chessboard options={{
       id: "desktop-board", position: liveFen, onSquareRightClick,
-      onPieceDrop: args => { setAutoplay(false); return onPieceDrop(args); },
-      onSquareClick: args => { setAutoplay(false); onSquareClick(args); },
+      allowDragging: !recorderPreview,
+      onPieceDrop: args => { setAutoplay(false); return !recorderPreview && onPieceDrop(args); },
+      onSquareClick: args => { if (!recorderPreview) { setAutoplay(false); onSquareClick(args); } },
       animationDurationInMs: 160, squareStyles: boardSquareStyles, customPieces: checkmatePieces,
       lightSquareStyle: { backgroundColor: "#edf0da" }, darkSquareStyle: { backgroundColor: "#88a182" },
       arrows: suggestions,
@@ -6845,14 +6887,13 @@ export default function App() {
         </>}
       </div>
     </section>}
-    recorder={workspaceMode === "recorder" ? <>
-      {!!playedMoves.length && <div className="pgn-recorded-moves" aria-label={t("Mosse registrate", "Recorded moves")}>
-        {playedMoves.map(move => <button type="button" key={move.fenIndex}
-          aria-current={step === move.fenIndex ? "step" : undefined}
-          disabled={variationActive} onClick={() => navigate(move.fenIndex)}>{move.moveNumber}{move.color === "w" ? "." : "..."} {move.san}</button>)}
-      </div>}
-      {renderRecorder("panel")}
-    </> : null}
+    recorder={workspaceMode === "recorder" ? <DesktopRecorder t={t} moves={playedMoves} history={fenHistory}
+      step={step} selectMove={navigate} position={recorderPreview} selectVariation={setRecorderPosition}
+      changeComment={handleActiveCommentChange} session={variationSession}
+      draftComment={variationDraft} changeDraftComment={setVariationDraft}
+      startVariation={startVariationRecording} finishVariation={finishVariationRecording}
+      saveVariation={saveDesktopVariation} removeVariation={removeDesktopVariation}
+      onPreview={desktopPreview} onHidePreview={hidePreview} paneRef={movesPaneRef} manageGames={() => renderRecorder("panel")} /> : null}
     engine={<section className="pgn-engine">
       <div className="pgn-engine-head">
         <h2>{t("Analisi Stockfish", "Stockfish analysis")}</h2>

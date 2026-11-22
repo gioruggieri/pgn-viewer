@@ -90,19 +90,20 @@ const TT = {
 
 function tokenizeMovetext(raw: string) {
   const rx = /\{[^}]*\}|;[^\n]*|^%[^\n]*|\$\d+|\d+\.(?:\.\.|…)?|1-0|0-1|1\/2-1\/2|\*|[()]|[^\s(){}$;]+|[{}$;]/gm;
-  const tokens: Array<{ t: string; v: string }> = [];
+  const tokens: Array<{ t: string; v: string; start: number; end: number }> = [];
   let m;
   while ((m = rx.exec(raw))) {
     const tok = m[0];
+    const add = (t: string, v = tok) => tokens.push({ t, v, start: m!.index, end: rx.lastIndex });
     if (tok[0] === "%") continue;
-    if (tok[0] === ";") tokens.push({ t: TT.COMMENT, v: tok.slice(1).trim() });
-    else if (tok[0] === "{") tokens.push({ t: TT.COMMENT, v: tok.slice(1, -1).trim() });
-    else if (tok[0] === "$") tokens.push({ t: TT.NAG, v: tok });
-    else if (/^\d+\.(?:\.\.|…)?$/.test(tok)) tokens.push({ t: TT.MOVE_NUM, v: tok });
-    else if (tok === "(") tokens.push({ t: TT.RAV_START, v: tok });
-    else if (tok === ")") tokens.push({ t: TT.RAV_END, v: tok });
-    else if (/^(1-0|0-1|1\/2-1\/2|\*)$/.test(tok)) tokens.push({ t: TT.RESULT, v: tok });
-    else tokens.push({ t: TT.SAN, v: tok });
+    if (tok[0] === ";") add(TT.COMMENT, tok.slice(1).trim());
+    else if (tok[0] === "{") add(TT.COMMENT, tok.slice(1, -1).trim());
+    else if (tok[0] === "$") add(TT.NAG);
+    else if (/^\d+\.(?:\.\.|…)?$/.test(tok)) add(TT.MOVE_NUM);
+    else if (tok === "(") add(TT.RAV_START);
+    else if (tok === ")") add(TT.RAV_END);
+    else if (/^(1-0|0-1|1\/2-1\/2|\*)$/.test(tok)) add(TT.RESULT);
+    else add(TT.SAN);
   }
   return tokens;
 
@@ -339,7 +340,24 @@ export function sideFromFen(fen: string): "w" | "b" {
 
 }
 
-export function parseMovetextToTree(moveText: string, startFen?: string): { main: Line; mainlineFlat: PlyNode[] } {
+type MoveSource = { end: number; comments: { start: number; end: number }[] };
+
+export function replaceMoveComment(text: string, source: MoveSource, value: string) {
+  const comment = sanitizePgnComment(value);
+  if (!source.comments.length) {
+    return comment ? text.slice(0, source.end) + ` {${comment}}` + text.slice(source.end) : text;
+  }
+
+  let updated = text;
+  for (let index = source.comments.length - 1; index >= 0; index--) {
+    const { start, end } = source.comments[index];
+    updated = updated.slice(0, start) + (index === 0 && comment ? `{${comment}}` : "") + updated.slice(end);
+  }
+  return updated;
+}
+
+export function parseMovetextToTree(moveText: string, startFen?: string, captureSource = false) {
+  const source = captureSource ? new Map<number, MoveSource>() : undefined;
   NODE_ID_SEQ = 1;
   LINE_ID_SEQ = 1;
   const tokens = tokenizeMovetext(moveText);
@@ -397,6 +415,7 @@ export function parseMovetextToTree(moveText: string, startFen?: string): { main
         if (lastWasMove && line.nodes.length) {
           const nd = line.nodes[line.nodes.length - 1];
           nd.commentAfter = (nd.commentAfter || []).concat(tok.v);
+          source?.get(nd.id)?.comments.push({ start: tok.start, end: tok.end });
         } else pendingBefore.push(tok.v);
         idx++;
         continue;
@@ -445,6 +464,7 @@ export function parseMovetextToTree(moveText: string, startFen?: string): { main
 
         pendingBefore = [];
         lastWasMove = true;
+        source?.set(node.id, { end: tok.end, comments: [] });
         line.nodes.push(node);
         idx++;
         continue;
@@ -467,6 +487,6 @@ export function parseMovetextToTree(moveText: string, startFen?: string): { main
   })();
   const { line: main } = parseLine(0, startFenActual);
   const mainlineFlat: PlyNode[] = [...main.nodes];
-  return { main, mainlineFlat };
+  return { main, mainlineFlat, source };
 
 }

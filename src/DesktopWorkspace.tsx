@@ -226,7 +226,7 @@ export function DesktopWorkspace(props: Props) {
           {modes.map(([id, label]) => <button type="button" key={id} aria-pressed={mode === id} onClick={() => props.setMode(id)}>{label}</button>)}
         </nav>
         {error && dialog !== "import" && <div className="pgn-error" role="alert">{error}</div>}
-        {mode === "recorder" ? <div className="pgn-panel pgn-recorder">{props.recorder}</div> : <>
+        {mode === "recorder" ? props.recorder : <>
           {mode === "training" && props.trainingPanel}
           {props.returnToMain && <div className="pgn-branch-bar"><button type="button" onClick={props.returnToMain}>{t("Torna alla linea principale", "Back to main line")}</button></div>}
           {props.transcript || <div className="pgn-empty">

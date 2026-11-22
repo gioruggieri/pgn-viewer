@@ -210,10 +210,16 @@ html:has(.pgn-desktop) { scrollbar-gutter: stable; }
 }
 
 
-.pgn-recorded-moves { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
-.pgn-recorded-moves button { min-height: 32px; padding: 4px 8px; }
-.pgn-recorded-moves button[aria-current=step] { background: var(--accent); color: white; }
+.pgn-recorder-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.pgn-recorder-toolbar button[aria-pressed=true] { background: var(--soft); color: #1c503b; }
+.pgn-recorder .pgn-recorder-toolbar { padding-inline: 0; }
+.pgn-recorder .pgn-variation { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 4px; }
+.pgn-recorder .pgn-variation > :not(.pgn-branch-toggle) { min-width: 0; width: 100%; }
+.pgn-recorder-editor { display: grid; gap: 6px; margin: 6px 0 8px; }
+.pgn-recorder-editor p { margin: 0; color: var(--muted); }
+.pgn-recorder-editor label { display: grid; gap: 4px; font-size: .85rem; font-weight: 600; }
 .pgn-recorder textarea { width: 100%; max-width: 100%; }
+.pgn-recorder-editor textarea { padding: 7px; border: 1px solid #98a99e; border-radius: 7px; resize: vertical; color: var(--ink); }
 
 .pgn-suggestions { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 9px 2px 0; padding: 0; list-style: none; color: var(--ink); font-size: .83rem; }
 .pgn-suggestions li { display: inline-flex; align-items: center; gap: 5px; }
